@@ -104,9 +104,11 @@ Restart ComfyUI, and the node will be available under:
 | --- | --- | --- | --- |
 | `images` | `IMAGE` | Required | Input video frames batch `[B, H, W, C]`. |
 | `masks` | `MASK` | Required | Input video masks batch `[B, H, W]`. |
-| `mode` | `COMBO` | `Interactive (Pause & Wait)` | Execution control mode. |
-| `feather_radius` | `INT` | `0` | Gaussian blur / feather radius applied to masks on output. |
-| `session_id` | `STRING` | `video_mask_edit` | Unique identifier for caching edits across executions. |
+| `mode` | `COMBO` | `Interactive (Pause & Wait)` | Execution control mode (`Interactive`, `Use Edited or Passthrough`, `Block Downstream`). |
+| `feather_edges` | `INT` | `0` | Gaussian blur / feather radius applied to masks on output (0 = disabled). |
+| `reset_cache` | `BOOLEAN` | `False` | Force clear edit cache for this video and reset to raw input masks. |
+
+> 💡 **Smart Video Cache Isolation**: Edit caches are automatically isolated by video fingerprint hash. Switching to a different video automatically starts a fresh clean canvas without any residual edits from previous videos!
 
 ---
 
@@ -168,6 +170,20 @@ Restart ComfyUI, and the node will be available under:
 | `滚轮 (Wheel)` | 画布放大 / 缩小 |
 | `鼠标中键` 或 `Alt + 拖拽` | 拖动画布视角 |
 | `Esc` | 关闭编辑器窗口 |
+
+---
+
+### 🛠️ 节点参数说明
+
+| 参数名 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `images` | `IMAGE` | 必填 | 原视频帧序列张量 `[B, H, W, C]`。 |
+| `masks` | `MASK` | 必填 | 初始视频遮罩序列 `[B, H, W]`。 |
+| `mode` | `COMBO` | `Interactive (Pause & Wait)` | 工作流运行模式（`暂停并等待`、`直接透传已编辑`、`阻断下游`）。 |
+| `feather_edges` | `INT` | `0` | 输出遮罩边缘羽化/高斯平滑像素半径（0 为原样保持）。 |
+| `reset_cache` | `BOOLEAN` | `False` | 勾选后将在本次运行时强制清空本视频的所有手动编辑，恢复到初始输入遮罩。 |
+
+> 💡 **智能视频指纹隔离**：本节点会自动根据视频特征（帧数、分辨率、画面稀疏采样指纹）隔离编辑缓存。更换不同视频时，**自动开启全新的干净会话**，绝不会将上一段视频的遮罩或修改混淆残留到新视频中！同时编辑器工具栏新增了 **`🔄 重置所有帧`** 按钮，可随时一键清除当前视频的手动修改。
 
 ---
 

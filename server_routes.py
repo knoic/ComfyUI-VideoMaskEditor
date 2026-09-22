@@ -15,10 +15,13 @@ import folder_paths
 # Global sessions dictionary: { node_id: session_data }
 sessions = {}
 
-def get_disk_cache_dir(node_id: str) -> str:
-    """Return local disk cache directory for saving edited masks persistently."""
+def get_disk_cache_dir(node_id: str, video_hash: str = None) -> str:
+    """Return local disk cache directory for saving edited masks persistently, isolated per video."""
     cache_root = os.path.join(folder_paths.get_temp_directory(), "video_mask_editor")
-    node_dir = os.path.join(cache_root, f"node_{node_id}")
+    if video_hash:
+        node_dir = os.path.join(cache_root, f"node_{node_id}", str(video_hash))
+    else:
+        node_dir = os.path.join(cache_root, f"node_{node_id}")
     os.makedirs(node_dir, exist_ok=True)
     return node_dir
 
@@ -133,6 +136,7 @@ def register_routes():
         return web.json_response({
             "has_session": True,
             "node_id": node_id,
+            "video_hash": sess.get("video_hash", ""),
             "num_frames": sess["num_frames"],
             "width": sess["width"],
             "height": sess["height"],
@@ -189,7 +193,7 @@ def register_routes():
             sess["edited_indices"].add(frame_idx)
             sess["version"] = sess.get("version", 0) + 1
             
-            node_dir = get_disk_cache_dir(node_id)
+            node_dir = sess.get("disk_cache_dir", get_disk_cache_dir(node_id, sess.get("video_hash")))
             save_path = os.path.join(node_dir, f"frame_{frame_idx:05d}.png")
             np_mask = (new_mask.numpy().clip(0, 1) * 255).astype(np.uint8)
             Image.fromarray(np_mask, mode="L").save(save_path)
@@ -227,7 +231,7 @@ def register_routes():
             sess["edited_indices"].add(target_frame)
             sess["version"] = sess.get("version", 0) + 1
             
-            node_dir = get_disk_cache_dir(node_id)
+            node_dir = sess.get("disk_cache_dir", get_disk_cache_dir(node_id, sess.get("video_hash")))
             save_path = os.path.join(node_dir, f"frame_{target_frame:05d}.png")
             np_mask = (sess["masks"][target_frame].numpy().clip(0, 1) * 255).astype(np.uint8)
             Image.fromarray(np_mask, mode="L").save(save_path)
@@ -268,7 +272,7 @@ def register_routes():
             sess["edited_indices"].add(frame_idx)
             sess["version"] = sess.get("version", 0) + 1
             
-            node_dir = get_disk_cache_dir(node_id)
+            node_dir = sess.get("disk_cache_dir", get_disk_cache_dir(node_id, sess.get("video_hash")))
             save_path = os.path.join(node_dir, f"frame_{frame_idx:05d}.png")
             np_mask = (shifted_mask.numpy().clip(0, 1) * 255).astype(np.uint8)
             Image.fromarray(np_mask, mode="L").save(save_path)
@@ -304,7 +308,7 @@ def register_routes():
             sess["edited_indices"].discard(frame_idx)
             sess["version"] = sess.get("version", 0) + 1
             
-            node_dir = get_disk_cache_dir(node_id)
+            node_dir = sess.get("disk_cache_dir", get_disk_cache_dir(node_id, sess.get("video_hash")))
             save_path = os.path.join(node_dir, f"frame_{frame_idx:05d}.png")
             if os.path.exists(save_path):
                 try:
@@ -334,14 +338,15 @@ def register_routes():
             sess["edited_indices"].clear()
             sess["version"] = sess.get("version", 0) + 1
             
-            node_dir = get_disk_cache_dir(node_id)
-            for f in os.listdir(node_dir):
-                if f.startswith("frame_") and f.endswith(".png"):
-                    try:
-                        os.remove(os.path.join(node_dir, f))
-                    except Exception:
-                        pass
-                        
+            node_dir = sess.get("disk_cache_dir", get_disk_cache_dir(node_id, sess.get("video_hash")))
+            if os.path.exists(node_dir):
+                for f in os.listdir(node_dir):
+                    if f.startswith("frame_") and f.endswith(".png"):
+                        try:
+                            os.remove(os.path.join(node_dir, f))
+                        except Exception:
+                            pass
+                            
             return web.json_response({"success": True, "edited_indices": [], "version": sess["version"]})
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)

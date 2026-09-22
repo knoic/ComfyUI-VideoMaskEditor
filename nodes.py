@@ -2,6 +2,7 @@ import os
 import time
 import json
 import logging
+import hashlib
 import threading
 import torch
 import torch.nn.functional as F
@@ -27,6 +28,19 @@ from .server_routes import (
 register_routes()
 
 logger = logging.getLogger("ComfyUI-VideoMaskEditor")
+
+def compute_video_hash(images: torch.Tensor) -> str:
+    """
+    Compute a fast fingerprint for the input video sequence.
+    Differentiates different videos by shape and sparse pixel sample.
+    """
+    B, H, W, C = images.shape
+    step_b = max(1, B // 8)
+    step_h = max(1, H // 16)
+    step_w = max(1, W // 16)
+    sample = images[::step_b, ::step_h, ::step_w, :].contiguous()
+    h = hashlib.sha256(sample.numpy().tobytes()).hexdigest()[:16]
+    return f"{B}f_{W}x{H}_{h}"
 
 def apply_gaussian_feather(mask_tensor: torch.Tensor, radius: int) -> torch.Tensor:
     """
@@ -82,6 +96,12 @@ class VideoMaskEditor:
                     "tooltip": "输出遮罩边缘羽化/平滑像素半径（0为原样保持）"
                 }),
             },
+            "optional": {
+                "reset_cache": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "勾选后将在本次运行时强制清空本视频的所有手动编辑缓存，恢复到初始输入遮罩"
+                }),
+            },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
                 "prompt": "PROMPT",
@@ -96,13 +116,13 @@ class VideoMaskEditor:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls, images, masks, mode, feather_edges, unique_id=None, **kwargs):
+    def IS_CHANGED(cls, images, masks, mode, feather_edges, reset_cache=False, unique_id=None, **kwargs):
         # Force re-execution if session version, mode, or feather parameters changed
         node_id = str(unique_id) if unique_id is not None else "default"
         version = sessions.get(node_id, {}).get("version", 0)
-        return f"{node_id}_{version}_{mode}_{feather_edges}_{time.time()}"
+        return f"{node_id}_{version}_{mode}_{feather_edges}_{reset_cache}_{time.time()}"
 
-    def process(self, images: torch.Tensor, masks: torch.Tensor, mode: str, feather_edges: int = 0, unique_id=None, **kwargs):
+    def process(self, images: torch.Tensor, masks: torch.Tensor, mode: str, feather_edges: int = 0, reset_cache: bool = False, unique_id=None, **kwargs):
         node_id = str(unique_id) if unique_id is not None else "default"
         orig_device = masks.device
         orig_dtype = masks.dtype
@@ -145,17 +165,42 @@ class VideoMaskEditor:
         cpu_images = torch.from_numpy(images.detach().cpu().float().numpy().copy())
         cpu_masks = torch.from_numpy(masks.detach().cpu().float().clamp(0.0, 1.0).numpy().copy())
 
+        # Compute video hash to isolate edits per video sequence
+        video_hash = compute_video_hash(cpu_images)
+        logger.info(f"VideoMaskEditor [{node_id}]: Video fingerprint: {video_hash}")
+
         # 2. Detect flickering frames
         flicker_indices = detect_flicker_frames(cpu_masks)
         if flicker_indices:
             logger.warning(f"VideoMaskEditor [{node_id}]: ⚠️ Detected {len(flicker_indices)} potential flicker frame(s): {flicker_indices}")
 
-        # 3. Load existing disk cache edits if present
-        node_dir = get_disk_cache_dir(node_id)
+        # 3. Load existing disk cache edits isolated by video_hash
+        node_dir = get_disk_cache_dir(node_id, video_hash)
+        
+        # Clean any legacy loose png files in the parent directory
+        parent_dir = os.path.dirname(node_dir)
+        if os.path.exists(parent_dir):
+            for f in os.listdir(parent_dir):
+                if f.startswith("frame_") and f.endswith(".png"):
+                    try:
+                        os.remove(os.path.join(parent_dir, f))
+                    except Exception:
+                        pass
+
+        # If reset_cache is True, wipe current video edits
+        if reset_cache and os.path.exists(node_dir):
+            logger.info(f"VideoMaskEditor [{node_id}]: 'reset_cache' is True. Wiping edits for video {video_hash}...")
+            for f in os.listdir(node_dir):
+                if f.startswith("frame_") and f.endswith(".png"):
+                    try:
+                        os.remove(os.path.join(node_dir, f))
+                    except Exception:
+                        pass
+
         edited_indices = set()
         active_masks = cpu_masks.clone()
 
-        if os.path.exists(node_dir):
+        if not reset_cache and os.path.exists(node_dir):
             for f in os.listdir(node_dir):
                 if f.startswith("frame_") and f.endswith(".png"):
                     try:
@@ -174,6 +219,9 @@ class VideoMaskEditor:
 
         # 4. Update in-memory session
         event = threading.Event()
+        prev_sess = sessions.get(node_id, {})
+        new_version = prev_sess.get("version", 0) + 1
+
         sessions[node_id] = {
             "images": cpu_images,
             "masks": active_masks,
@@ -186,7 +234,9 @@ class VideoMaskEditor:
             "edited_indices": edited_indices,
             "flicker_indices": flicker_indices,
             "event": event,
-            "version": sessions.get(node_id, {}).get("version", 0)
+            "version": new_version,
+            "video_hash": video_hash,
+            "disk_cache_dir": node_dir
         }
 
         # 5. Notify Frontend via WebSocket
@@ -195,6 +245,7 @@ class VideoMaskEditor:
             try:
                 PromptServer.instance.send_sync("video-mask-editor-update", {
                     "node_id": node_id,
+                    "video_hash": video_hash,
                     "num_frames": B,
                     "width": W,
                     "height": H,

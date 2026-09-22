@@ -283,12 +283,16 @@ class VideoMaskEditorDialog {
         const btnSmooth = createActionBtn("🔄", "平滑/羽化", "S", () => this.smoothCurrentMask());
         const btnClear = createActionBtn("🗑️", "清空当前帧", "Del", () => this.clearCurrentMask());
         const btnReset = createActionBtn("🔁", "重置当前帧", "R", () => this.resetCurrentFrame(), "#2d2020");
+        const btnResetAll = createActionBtn("⚠️", "重置所有帧", "全部", () => this.resetAllFrames(), "#3d1818");
+        btnResetAll.style.borderColor = "#da3633";
+        btnResetAll.style.color = "#f85149";
         
         actionGroup.appendChild(btnCopyPrev);
         actionGroup.appendChild(btnCopyNext);
         actionGroup.appendChild(btnSmooth);
         actionGroup.appendChild(btnClear);
         actionGroup.appendChild(btnReset);
+        actionGroup.appendChild(btnResetAll);
         this.toolbar.appendChild(actionGroup);
         
         // Tool settings
@@ -917,6 +921,37 @@ class VideoMaskEditorDialog {
         }
     }
     
+    async resetAllFrames() {
+        if (!confirm("⚠️ 确定要清空该视频的所有手动编辑，恢复到初始输入遮罩吗？\n此操作将清除所有已保存的手动画笔和位移。")) {
+            return;
+        }
+        try {
+            const resp = await fetch(getApiURL("/video_mask_editor/reset_all"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    node_id: this.nodeId
+                })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                this.editedIndices.clear();
+                this.maskCanvasCache.clear();
+                this.imageCache.clear();
+                this.undoStack = [];
+                this.redoStack = [];
+                await this.loadCurrentFrame();
+                this.updateTrackStrip();
+                alert("已成功恢复初始遮罩！");
+            } else {
+                alert("重置失败: " + (data.error || "未知错误"));
+            }
+        } catch (e) {
+            console.error("Reset all frames error:", e);
+            alert("请求重置失败: " + e.message);
+        }
+    }
+    
     setupShortcuts() {
         window.addEventListener("keydown", (e) => {
             if (!this.backdrop || this.backdrop.style.display !== "flex") return;
@@ -1321,9 +1356,11 @@ app.registerExtension({
                     app.graph.setDirtyCanvas(true, false);
                 }
                 
-                // If in Interactive (Pause & Wait) mode, automatically open the visual editor!
-                if (data.is_paused) {
-                    const editor = getEditorDialog();
+                // If editor is currently open for this node, refresh to sync new video session
+                const editor = getEditorDialog();
+                if (editor.backdrop && editor.backdrop.style.display === "flex" && editor.nodeId === nodeId) {
+                    editor.open(nodeId);
+                } else if (data.is_paused) {
                     editor.open(nodeId);
                 }
             } catch (err) {

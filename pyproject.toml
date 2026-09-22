@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-videomaskeditor"
-version = "1.0.0"
+version = "1.0.1"
 description = "Interactive video mask editor to fix mask flickering/missing frames from SAM/SAM3.1 before diffusion models or subject cropping."
 readme = "README.md"
 license = { text = "MIT" }
