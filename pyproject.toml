@@ -1,0 +1,25 @@
+[project]
+name = "comfyui-videomaskeditor"
+version = "1.0.0"
+description = "Interactive video mask editor to fix mask flickering/missing frames from SAM/SAM3.1 before diffusion models or subject cropping."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "knoic", email = "912519858@qq.com" }
+]
+dependencies = [
+    "torch",
+    "torchvision",
+    "numpy",
+    "Pillow",
+    "aiohttp"
+]
+
+[project.urls]
+Repository = "https://github.com/knoic/ComfyUI-VideoMaskEditor"
+Homepage = "https://github.com/knoic/ComfyUI-VideoMaskEditor"
+
+[tool.comfy]
+PublisherId = "knoic"
+DisplayName = "ComfyUI-VideoMaskEditor"
+Icon = "https://raw.githubusercontent.com/knoic/ComfyUI-VideoMaskEditor/main/assets/editor_preview.png"
