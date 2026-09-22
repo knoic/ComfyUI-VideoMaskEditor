@@ -3,9 +3,21 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom%20Node-blue)](https://github.com/comfyanonymous/ComfyUI)
 
-An interactive video mask editor node for **ComfyUI**. Designed specifically to solve **mask flickering, missing frames, and sudden dropouts** caused by video segmentation models (such as SAM, SAM2, SAM3, and SAM3.1) before feeding masks into downstream diffusion pipelines (Wan, LTX-Video, CogVideoX, AnimateDiff) or subject crop tools (`MVEx Subject Crop`).
+An interactive video mask editor node for **ComfyUI**. Designed specifically to solve **mask flickering, missing frames, and sudden dropouts** caused by video segmentation models (such as SAM, SAM2, SAM3, and SAM3.1) before feeding masks into downstream diffusion pipelines (Wan, MiniMax H3, LTX-Video, CogVideoX, AnimateDiff) or subject crop tools (`MVEx Subject Crop`).
 
 [中文文档](#中文说明) | [English Documentation](#english-documentation)
+
+---
+
+### 📸 Preview / 界面预览
+
+| 全屏交互式遮罩修复编辑器 (Interactive Canvas Editor) |
+| :---: |
+| ![Editor Preview](assets/editor_preview.png) |
+
+| ComfyUI 工作流节点 (Node in Graph) |
+| :---: |
+| ![Node Preview](assets/node_preview.png) |
 
 ---
 
@@ -14,7 +26,7 @@ An interactive video mask editor node for **ComfyUI**. Designed specifically to 
 
 ### 💡 Why VideoMaskEditor?
 
-When tracking objects or segmenting videos using SAM/SAM3.1, models frequently produce occasional "bad frames" where the mask completely disappears, flickers, or loses a major chunk. A single bad frame can ruin the entire downstream video generation.
+When tracking objects or segmenting videos using SAM/SAM3.1, models frequently produce occasional "bad frames" where the mask completely disappears, flickers, or loses a major chunk. A single bad frame can ruin the entire downstream video generation in diffusion models (Wan2.1, MiniMax H3, LTX-Video, CogVideoX, AnimateDiff) or cause video crops to jump.
 
 **ComfyUI-VideoMaskEditor** provides a full-featured visual editor right inside your ComfyUI workflow:
 1. **Zero-disruption workflow**: Pause execution on this node while you fix bad masks, then continue seamlessly.
@@ -107,7 +119,7 @@ Restart ComfyUI, and the node will be available under:
 
 ### 💡 为什么需要本节点？
 
-在使用 SAM、SAM2、SAM3、SAM3.1 等分割大模型处理视频生成遮罩时，常常会出现**偶发性闪烁、丢帧或部分区域丢失**的问题。大部分帧效果良好，但只要有 1~2 帧丢失，就会毁掉后续的视频扩散模型（如 Wan2.1、LTX-Video、CogVideoX、AnimateDiff）或主体裁剪抠图（如 `MVEx Subject Crop`）。
+在使用 SAM、SAM2、SAM3、SAM3.1 等分割大模型处理视频生成遮罩时，常常会出现**偶发性闪烁、丢帧或部分区域丢失**的问题。大部分帧效果良好，但只要有 1~2 帧丢失，就会毁掉后续的视频扩散模型（如 Wan2.1、MiniMax H3、LTX-Video、CogVideoX、AnimateDiff）或主体裁剪抠图（如 `MVEx Subject Crop`）。
 
 **ComfyUI-VideoMaskEditor** 提供了完整的可视化遮罩交互修复工具：
 1. **零打扰工作流**：在当前节点暂停流程，打开交互画布修复坏帧，一键继续工作流向后传递。
