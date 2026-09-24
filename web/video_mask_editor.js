@@ -23,7 +23,7 @@ class VideoMaskEditorDialog {
         this.isPaused = false;
         
         // Tool state
-        this.currentTool = "brush"; // "brush", "eraser", "move", "pan"
+        this.currentTool = "brush"; // "brush", "eraser", "wand", "move", "pan"
         this.brushSize = 30;
         this.eraserSize = 30;
         this.maskOpacity = 0.55;
@@ -44,6 +44,22 @@ class VideoMaskEditorDialog {
         this.lastDrawY = 0;
         this.undoStack = [];
         this.redoStack = [];
+        this.operationCanvas = document.createElement("canvas");
+        this.operationCtx = this.operationCanvas.getContext("2d");
+        this.lastEditWasBatch = false;
+        this.isApplyingOperation = false;
+
+        // Timeline selection / batch editing
+        this.selectedFrames = new Set([0]);
+        this.selectionAnchor = 0;
+        this.isSelectingFrames = false;
+        this.selectionDragStart = 0;
+        this.applyToSelection = false;
+
+        // Magic wand
+        this.wandTolerance = 32;
+        this.wandContiguous = true;
+        this.wandOperation = "add";
         
         // Move mask state
         this.isMovingMask = false;
@@ -220,7 +236,7 @@ class VideoMaskEditorDialog {
         // 3. Bottom Timeline & Transport Bar
         this.bottomBar = document.createElement("div");
         this.bottomBar.style.cssText = `
-            height: 105px; background: #1b1f27; border-top: 1px solid #30363d;
+            height: 122px; background: #1b1f27; border-top: 1px solid #30363d;
             padding: 8px 16px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0;
         `;
         this.window.appendChild(this.bottomBar);
@@ -251,11 +267,13 @@ class VideoMaskEditorDialog {
         
         this.btnBrush = createToolBtn("brush", "🖌️", "画笔 (涂抹)", "B");
         this.btnEraser = createToolBtn("eraser", "🧹", "橡皮擦 (擦除)", "E");
+        this.btnWand = createToolBtn("wand", "🪄", "魔棒选择", "W");
         this.btnMove = createToolBtn("move", "✥", "拖动遮罩", "M");
         this.btnPan = createToolBtn("pan", "✋", "画布平移", "H");
         
         toolGroup.appendChild(this.btnBrush);
         toolGroup.appendChild(this.btnEraser);
+        toolGroup.appendChild(this.btnWand);
         toolGroup.appendChild(this.btnMove);
         toolGroup.appendChild(this.btnPan);
         this.toolbar.appendChild(toolGroup);
@@ -319,6 +337,20 @@ class VideoMaskEditorDialog {
             <input type="range" id="vme-opacity-slider" min="10" max="100" value="${Math.round(this.maskOpacity * 100)}" style="width:100%;">
         `;
         settingsGroup.appendChild(opacityRow);
+
+        const wandRow = document.createElement("div");
+        wandRow.style.cssText = "display: flex; flex-direction: column; gap: 5px; padding: 7px; background: #16191f; border-radius: 5px;";
+        wandRow.innerHTML = `
+            <div style="font-weight:600;color:#8b949e;">魔棒参数</div>
+            <div style="display:flex;justify-content:space-between;"><span>容差</span><span id="vme-wand-tolerance-val">${this.wandTolerance}</span></div>
+            <input type="range" id="vme-wand-tolerance" min="0" max="128" value="${this.wandTolerance}">
+            <label style="display:flex;align-items:center;gap:5px;"><input type="checkbox" id="vme-wand-contiguous" checked> 仅连续区域</label>
+            <select id="vme-wand-operation" style="height:26px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;">
+                <option value="add">添加到遮罩</option>
+                <option value="erase">从遮罩删除</option>
+            </select>
+        `;
+        settingsGroup.appendChild(wandRow);
         
         // Mask color choices
         const colorRow = document.createElement("div");
@@ -398,13 +430,20 @@ class VideoMaskEditorDialog {
             opacityRow.querySelector("#vme-opacity-val").textContent = `${v}%`;
             this.render();
         };
+
+        wandRow.querySelector("#vme-wand-tolerance").oninput = (e) => {
+            this.wandTolerance = parseInt(e.target.value);
+            wandRow.querySelector("#vme-wand-tolerance-val").textContent = this.wandTolerance.toString();
+        };
+        wandRow.querySelector("#vme-wand-contiguous").onchange = (e) => this.wandContiguous = e.target.checked;
+        wandRow.querySelector("#vme-wand-operation").onchange = (e) => this.wandOperation = e.target.value;
         
         this.setTool("brush");
     }
     
     setTool(tool) {
         this.currentTool = tool;
-        const btns = [this.btnBrush, this.btnEraser, this.btnMove, this.btnPan];
+        const btns = [this.btnBrush, this.btnEraser, this.btnWand, this.btnMove, this.btnPan];
         btns.forEach(b => {
             if (!b) return;
             if (b.dataset && b.dataset.tool === tool) {
@@ -485,6 +524,31 @@ class VideoMaskEditorDialog {
         this.frameIndicator = document.createElement("div");
         this.frameIndicator.style.cssText = "font-size: 13px; font-weight: 600; color: #58a6ff;";
         this.frameIndicator.textContent = "帧 1 / 1";
+
+        const selectionGroup = document.createElement("div");
+        selectionGroup.style.cssText = "display:flex;align-items:center;gap:8px;font-size:12px;";
+        this.selectionBadge = document.createElement("span");
+        this.selectionBadge.style.cssText = "color:#d2a8ff;min-width:70px;text-align:center;";
+        this.selectionBadge.textContent = "已选 1 帧";
+        const batchLabel = document.createElement("label");
+        batchLabel.style.cssText = "display:flex;align-items:center;gap:5px;cursor:pointer;color:#c9d1d9;";
+        this.batchCheckbox = document.createElement("input");
+        this.batchCheckbox.type = "checkbox";
+        this.batchCheckbox.onchange = (e) => this.applyToSelection = e.target.checked;
+        batchLabel.appendChild(this.batchCheckbox);
+        batchLabel.appendChild(document.createTextNode("应用到选中帧"));
+        const selectFlickers = document.createElement("button");
+        selectFlickers.style.cssText = "background:#21262d;color:#f85149;border:1px solid #da3633;border-radius:4px;padding:3px 7px;cursor:pointer;";
+        selectFlickers.textContent = "选择异常帧";
+        selectFlickers.onclick = () => {
+            if (!this.flickerIndices.length) return;
+            this.selectedFrames = new Set(this.flickerIndices);
+            this.selectionAnchor = this.flickerIndices[0];
+            this.updateTrackStrip();
+        };
+        selectionGroup.appendChild(this.selectionBadge);
+        selectionGroup.appendChild(batchLabel);
+        selectionGroup.appendChild(selectFlickers);
         
         // Right: Flicker jump alerts
         const flickerGroup = document.createElement("div");
@@ -509,6 +573,7 @@ class VideoMaskEditorDialog {
         
         ctrlRow.appendChild(playGroup);
         ctrlRow.appendChild(this.frameIndicator);
+        ctrlRow.appendChild(selectionGroup);
         ctrlRow.appendChild(flickerGroup);
         this.bottomBar.appendChild(ctrlRow);
         
@@ -520,7 +585,10 @@ class VideoMaskEditorDialog {
         this.scrubber.value = "0";
         this.scrubber.style.cssText = "width: 100%; height: 6px; cursor: pointer; margin: 4px 0;";
         this.scrubber.oninput = (e) => {
-            this.goToFrame(parseInt(e.target.value));
+            const frame = parseInt(e.target.value);
+            this.selectedFrames = new Set([frame]);
+            this.selectionAnchor = frame;
+            this.goToFrame(frame);
         };
         this.bottomBar.appendChild(this.scrubber);
         
@@ -530,6 +598,8 @@ class VideoMaskEditorDialog {
             width: 100%; height: 26px; background: #16191f; border: 1px solid #30363d;
             border-radius: 4px; position: relative; overflow: hidden; display: flex;
         `;
+        this.trackContainer.title = "单击定位｜Shift 连选｜Ctrl 增减｜按住左键拖动刷选";
+        window.addEventListener("mouseup", () => this.isSelectingFrames = false);
         this.bottomBar.appendChild(this.trackContainer);
     }
     
@@ -546,11 +616,7 @@ class VideoMaskEditorDialog {
                 cursor: pointer; border-right: 1px solid rgba(255,255,255,0.04);
             `;
             
-            // Highlight current frame
-            if (i === this.currentFrame) {
-                cell.style.background = "rgba(88, 166, 255, 0.4)";
-                cell.style.border = "1px solid #58a6ff";
-            }
+            if (this.selectedFrames.has(i)) cell.style.background = "rgba(163, 113, 247, 0.42)";
             
             // Mark edited frames with green dot
             if (this.editedIndices.has(i)) {
@@ -564,7 +630,7 @@ class VideoMaskEditorDialog {
             
             // Mark flicker frame with red warning indicator
             if (this.flickerIndices.includes(i)) {
-                cell.style.background = "rgba(218, 54, 51, 0.35)";
+                if (!this.selectedFrames.has(i)) cell.style.background = "rgba(218, 54, 51, 0.35)";
                 const warn = document.createElement("div");
                 warn.style.cssText = `
                     position: absolute; top: 1px; left: 50%; transform: translateX(-50%);
@@ -573,10 +639,49 @@ class VideoMaskEditorDialog {
                 warn.textContent = "!";
                 cell.appendChild(warn);
             }
+
+            // Current frame outline stays distinct from the selected-frame fill.
+            if (i === this.currentFrame) {
+                cell.style.boxShadow = "inset 0 0 0 2px #58a6ff";
+            }
             
-            cell.onclick = () => this.goToFrame(i);
+            cell.onmousedown = (e) => this.handleTimelineSelection(i, e);
+            cell.onmouseenter = (e) => {
+                if (this.isSelectingFrames && (e.buttons & 1)) this.extendTimelineDrag(i);
+            };
             this.trackContainer.appendChild(cell);
         }
+        if (this.selectionBadge) this.selectionBadge.textContent = `已选 ${this.selectedFrames.size} 帧`;
+    }
+
+    handleTimelineSelection(frameIdx, event) {
+        event.preventDefault();
+        if (event.shiftKey) {
+            this.selectFrameRange(this.selectionAnchor, frameIdx, false);
+        } else if (event.ctrlKey || event.metaKey) {
+            if (this.selectedFrames.has(frameIdx) && this.selectedFrames.size > 1) this.selectedFrames.delete(frameIdx);
+            else this.selectedFrames.add(frameIdx);
+            this.selectionAnchor = frameIdx;
+        } else {
+            this.selectedFrames = new Set([frameIdx]);
+            this.selectionAnchor = frameIdx;
+            this.selectionDragStart = frameIdx;
+            this.isSelectingFrames = true;
+        }
+        this.goToFrame(frameIdx);
+        this.updateTrackStrip();
+    }
+
+    extendTimelineDrag(frameIdx) {
+        this.selectFrameRange(this.selectionDragStart, frameIdx, false);
+    }
+
+    selectFrameRange(a, b, additive = false) {
+        if (!additive) this.selectedFrames.clear();
+        const start = Math.min(a, b);
+        const end = Math.max(a, b);
+        for (let i = start; i <= end; i++) this.selectedFrames.add(i);
+        this.updateTrackStrip();
     }
     
     setupCanvasEvents() {
@@ -610,9 +715,9 @@ class VideoMaskEditorDialog {
             }
             
             if (e.button !== 0) return;
+            if (this.isApplyingOperation) return;
             
             const pt = this.getCanvasCoords(e);
-            
             if (this.currentTool === "move") {
                 this.isMovingMask = true;
                 this.moveStartX = pt.x;
@@ -625,11 +730,22 @@ class VideoMaskEditorDialog {
                 }
                 this.saveUndoState();
             } else if (this.currentTool === "brush" || this.currentTool === "eraser") {
+                if (this.applyToSelection && !this.selectedFrames.has(this.currentFrame)) {
+                    this.selectedFrames.add(this.currentFrame);
+                    this.updateTrackStrip();
+                }
+                this.clearOperationCanvas();
                 this.isDrawing = true;
                 this.lastDrawX = pt.x;
                 this.lastDrawY = pt.y;
                 this.saveUndoState();
                 this.drawPoint(pt.x, pt.y);
+            } else if (this.currentTool === "wand") {
+                if (this.applyToSelection && !this.selectedFrames.has(this.currentFrame)) {
+                    this.selectedFrames.add(this.currentFrame);
+                    this.updateTrackStrip();
+                }
+                this.applyMagicWand(Math.floor(pt.x), Math.floor(pt.y));
             }
         });
         
@@ -681,9 +797,7 @@ class VideoMaskEditorDialog {
             
             if (this.isDrawing) {
                 this.isDrawing = false;
-                this.editedIndices.add(this.currentFrame);
-                this.saveCurrentFrameMask(false);
-                this.updateTrackStrip();
+                this.finishMaskOperation(this.currentTool === "eraser" ? "erase" : "add");
             }
         });
     }
@@ -750,6 +864,7 @@ class VideoMaskEditorDialog {
         this.maskCtx.arc(x, y, radius, 0, Math.PI * 2);
         this.maskCtx.fill();
         this.maskCtx.restore();
+        this.drawPointOnContext(this.operationCtx, x, y, radius);
         
         this.render();
     }
@@ -770,8 +885,170 @@ class VideoMaskEditorDialog {
         this.maskCtx.lineTo(x2, y2);
         this.maskCtx.stroke();
         this.maskCtx.restore();
+        this.drawLineOnContext(this.operationCtx, x1, y1, x2, y2, radius);
         
         this.render();
+    }
+
+    clearOperationCanvas() {
+        if (!this.operationCtx) return;
+        this.operationCtx.clearRect(0, 0, this.width, this.height);
+    }
+
+    drawPointOnContext(ctx, x, y, radius) {
+        if (!ctx) return;
+        ctx.save();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    drawLineOnContext(ctx, x1, y1, x2, y2, radius) {
+        if (!ctx) return;
+        ctx.save();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = radius * 2;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    async finishMaskOperation(operation) {
+        if (this.isApplyingOperation) return;
+        this.isApplyingOperation = true;
+        try {
+            if (this.applyToSelection && this.selectedFrames.size > 1) {
+                await this.applyOperationToSelectedFrames(operation);
+            } else {
+                this.editedIndices.add(this.currentFrame);
+                this.lastEditWasBatch = false;
+                await this.saveCurrentFrameMask(false);
+                this.updateTrackStrip();
+            }
+        } finally {
+            this.isApplyingOperation = false;
+        }
+    }
+
+    async applyOperationToSelectedFrames(operation) {
+        const targets = [...this.selectedFrames].sort((a, b) => a - b);
+        if (!targets.length || !this.operationCanvas) return;
+        try {
+            const resp = await fetch(getApiURL("/video_mask_editor/apply_batch_operation"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    node_id: this.nodeId,
+                    frame_indices: targets,
+                    operation,
+                    operation_data: this.operationCanvas.toDataURL("image/png")
+                })
+            });
+            const res = await resp.json();
+            if (!res.success) throw new Error(res.error || "批量操作失败");
+            this.editedIndices = new Set(res.edited_indices);
+            targets.forEach(i => this.maskCanvasCache.delete(i));
+            this.lastEditWasBatch = true;
+            await this.loadCurrentFrame();
+            this.updateTrackStrip();
+        } catch (err) {
+            console.error("Batch mask operation failed:", err);
+            alert("批量编辑失败: " + err.message);
+            await this.loadCurrentFrame();
+        }
+    }
+
+    async undoLastBatchOperation() {
+        try {
+            const resp = await fetch(getApiURL("/video_mask_editor/undo_batch_operation"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ node_id: this.nodeId })
+            });
+            const res = await resp.json();
+            if (!res.success) throw new Error(res.error || "无法撤销批量操作");
+            (res.frame_indices || []).forEach(i => this.maskCanvasCache.delete(i));
+            this.editedIndices = new Set(res.edited_indices || []);
+            this.lastEditWasBatch = false;
+            await this.loadCurrentFrame();
+            this.updateTrackStrip();
+        } catch (err) {
+            console.error("Undo batch operation failed:", err);
+        }
+    }
+
+    async applyMagicWand(x, y) {
+        if (!this.videoCtx || !this.maskCtx || x < 0 || y < 0 || x >= this.width || y >= this.height) return;
+        this.saveUndoState();
+        this.clearOperationCanvas();
+
+        const source = this.videoCtx.getImageData(0, 0, this.width, this.height).data;
+        const pixelCount = this.width * this.height;
+        const selected = new Uint8Array(pixelCount);
+        const seed = y * this.width + x;
+        const sr = source[seed * 4];
+        const sg = source[seed * 4 + 1];
+        const sb = source[seed * 4 + 2];
+        const limit = this.wandTolerance * this.wandTolerance * 3;
+        const matches = (pos) => {
+            const offset = pos * 4;
+            const dr = source[offset] - sr;
+            const dg = source[offset + 1] - sg;
+            const db = source[offset + 2] - sb;
+            return dr * dr + dg * dg + db * db <= limit;
+        };
+
+        if (this.wandContiguous) {
+            const queue = new Int32Array(pixelCount);
+            let head = 0;
+            let tail = 0;
+            queue[tail++] = seed;
+            selected[seed] = 1;
+            const tryAdd = (next) => {
+                if (!selected[next] && matches(next)) {
+                    selected[next] = 1;
+                    queue[tail++] = next;
+                }
+            };
+            while (head < tail) {
+                const pos = queue[head++];
+                const px = pos % this.width;
+                if (px > 0) tryAdd(pos - 1);
+                if (px < this.width - 1) tryAdd(pos + 1);
+                if (pos >= this.width) tryAdd(pos - this.width);
+                if (pos < pixelCount - this.width) tryAdd(pos + this.width);
+            }
+        } else {
+            for (let pos = 0; pos < pixelCount; pos++) {
+                if (matches(pos)) selected[pos] = 1;
+            }
+        }
+
+        const operationImage = this.operationCtx.createImageData(this.width, this.height);
+        for (let pos = 0; pos < pixelCount; pos++) {
+            if (!selected[pos]) continue;
+            const offset = pos * 4;
+            operationImage.data[offset] = 255;
+            operationImage.data[offset + 1] = 255;
+            operationImage.data[offset + 2] = 255;
+            operationImage.data[offset + 3] = 255;
+        }
+        this.operationCtx.putImageData(operationImage, 0, 0);
+
+        this.maskCtx.save();
+        this.maskCtx.globalCompositeOperation = this.wandOperation === "erase" ? "destination-out" : "source-over";
+        this.maskCtx.drawImage(this.operationCanvas, 0, 0);
+        this.maskCtx.restore();
+        this.render();
+        await this.finishMaskOperation(this.wandOperation);
     }
     
     saveUndoState() {
@@ -804,6 +1081,7 @@ class VideoMaskEditorDialog {
     
     applyMaskTranslation(dx, dy) {
         if (!this.maskCanvas || !this.maskCtx) return;
+        this.lastEditWasBatch = false;
         const tempCanvas = document.createElement("canvas");
         tempCanvas.width = this.width;
         tempCanvas.height = this.height;
@@ -840,6 +1118,7 @@ class VideoMaskEditorDialog {
     }
     
     async copyFromFrame(sourceIdx) {
+        this.lastEditWasBatch = false;
         this.saveUndoState();
         const srcCanvas = await this.getOrLoadMaskCanvas(sourceIdx);
         if (srcCanvas && this.maskCtx) {
@@ -864,6 +1143,7 @@ class VideoMaskEditorDialog {
     
     smoothCurrentMask() {
         if (!this.maskCtx) return;
+        this.lastEditWasBatch = false;
         this.saveUndoState();
         const imgData = this.maskCtx.getImageData(0, 0, this.width, this.height);
         const data = imgData.data;
@@ -899,6 +1179,7 @@ class VideoMaskEditorDialog {
     }
     
     async resetCurrentFrame() {
+        this.lastEditWasBatch = false;
         this.saveUndoState();
         try {
             const resp = await fetch(getApiURL("/video_mask_editor/reset_frame"), {
@@ -959,6 +1240,7 @@ class VideoMaskEditorDialog {
             
             if (e.key === "b" || e.key === "B") this.setTool("brush");
             else if (e.key === "e" || e.key === "E") this.setTool("eraser");
+            else if (e.key === "w" || e.key === "W") this.setTool("wand");
             else if (e.key === "m" || e.key === "M") this.setTool("move");
             else if (e.key === "h" || e.key === "H") this.setTool("pan");
             else if (e.key === "[" || e.key === "p" || e.key === "P") this.copyPrevFrame();
@@ -970,13 +1252,20 @@ class VideoMaskEditorDialog {
                 this.togglePlay();
             } else if (e.ctrlKey && (e.key === "z" || e.key === "Z")) {
                 e.preventDefault();
-                if (e.shiftKey) this.redo();
+                if (this.lastEditWasBatch && !e.shiftKey) this.undoLastBatchOperation();
+                else if (e.shiftKey) this.redo();
                 else this.undo();
             } else if (e.ctrlKey && (e.key === "y" || e.key === "Y")) {
                 e.preventDefault();
                 this.redo();
             } else if (e.key === "Escape") {
-                this.close();
+                if (this.selectedFrames.size > 1) {
+                    this.selectedFrames = new Set([this.currentFrame]);
+                    this.selectionAnchor = this.currentFrame;
+                    this.updateTrackStrip();
+                } else {
+                    this.close();
+                }
             }
         });
     }
@@ -994,6 +1283,12 @@ class VideoMaskEditorDialog {
         this.undoStack = [];
         this.redoStack = [];
         this.currentFrame = 0;
+        this.selectedFrames = new Set([0]);
+        this.selectionAnchor = 0;
+        this.applyToSelection = false;
+        this.lastEditWasBatch = false;
+        this.isApplyingOperation = false;
+        if (this.batchCheckbox) this.batchCheckbox.checked = false;
         
         try {
             console.log(`[VideoMaskEditor] Fetching session for node: ${nodeId}...`);
@@ -1020,6 +1315,8 @@ class VideoMaskEditorDialog {
             this.videoCanvas.height = this.height;
             this.maskCanvas.width = this.width;
             this.maskCanvas.height = this.height;
+            this.operationCanvas.width = this.width;
+            this.operationCanvas.height = this.height;
             this.canvasContainer.style.width = `${this.width}px`;
             this.canvasContainer.style.height = `${this.height}px`;
             
@@ -1254,6 +1551,8 @@ class VideoMaskEditorDialog {
     
     stepFrame(delta) {
         const next = Math.max(0, Math.min(this.numFrames - 1, this.currentFrame + delta));
+        this.selectedFrames = new Set([next]);
+        this.selectionAnchor = next;
         this.goToFrame(next);
     }
     
@@ -1261,6 +1560,8 @@ class VideoMaskEditorDialog {
         if (this.flickerIndices.length === 0) return;
         let next = this.flickerIndices.find(f => f > this.currentFrame);
         if (next === undefined) next = this.flickerIndices[0];
+        this.selectedFrames = new Set([next]);
+        this.selectionAnchor = next;
         this.goToFrame(next);
     }
     

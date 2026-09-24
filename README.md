@@ -32,7 +32,8 @@ When tracking objects or segmenting videos using SAM/SAM3.1, models frequently p
 1. **Zero-disruption workflow**: Pause execution on this node while you fix bad masks, then continue seamlessly.
 2. **Auto-Flicker Detection**: Highlights suspicious frames with `⚠️` markers where mask area suddenly drops or disappears.
 3. **One-key Frame Borrowing**: Inherit the mask from the previous (`P`) or next (`N`) frame instantly.
-4. **Full Drawing Suite**: Paint, erase, translate, feather edges, zoom, pan, and playback.
+4. **Full Drawing Suite**: Paint, erase, magic-wand select, translate, feather edges, zoom, pan, and playback.
+5. **Multi-frame Editing**: Select frames directly on the timeline and apply one brush, eraser, or magic-wand operation across them without replacing their existing masks.
 
 ---
 
@@ -40,6 +41,7 @@ When tracking objects or segmenting videos using SAM/SAM3.1, models frequently p
 
 - 🖼️ **Full-Featured Canvas Editor**:
   - **Brush & Eraser**: Custom size and hardness.
+  - **Magic Wand**: Add or remove contiguous/color-similar regions with adjustable tolerance.
   - **Move Mask**: Translate the mask freely on the frame.
   - **Feathering**: Smooth out jagged or harsh mask edges.
   - **Mask Color & Opacity**: Customize overlay visibility for maximum precision.
@@ -49,6 +51,7 @@ When tracking objects or segmenting videos using SAM/SAM3.1, models frequently p
   - Real-time video playback at adjustable FPS.
   - Edited frames marked with green dots (`●`).
   - Missing or flickering masks highlighted with warning badges (`⚠️`).
+  - Click, `Shift`-click, `Ctrl`-click, or drag across the timeline to select frames for batch editing.
 - ⚡ **Workflow Control Modes**:
   - `Interactive (Pause & Wait)`: Freezes execution when frames arrive; open editor, edit, and click **"Save & Continue"** to send fixed masks directly to downstream nodes.
   - `Use Edited or Passthrough`: Non-blocking. Uses cached edits if available, or passes through untouched.
@@ -65,6 +68,7 @@ When tracking objects or segmenting videos using SAM/SAM3.1, models frequently p
 | `←` / `→` (Left / Right Arrow) | Previous frame / Next frame |
 | `B` | Brush tool |
 | `E` | Eraser tool |
+| `W` | Magic Wand tool |
 | `M` | Move / Translate mask tool |
 | `[` / `]` | Decrease / Increase brush size |
 | `P` | Copy mask from **Previous** frame |
@@ -75,7 +79,7 @@ When tracking objects or segmenting videos using SAM/SAM3.1, models frequently p
 | `F` | Fit canvas to screen |
 | `Wheel` | Zoom in / Zoom out |
 | `Middle Click` / `Alt + Drag` | Pan canvas |
-| `Esc` | Close editor modal |
+| `Esc` | Clear a multi-frame selection; press again to close the editor |
 
 ---
 
@@ -127,7 +131,8 @@ Restart ComfyUI, and the node will be available under:
 1. **零打扰工作流**：在当前节点暂停流程，打开交互画布修复坏帧，一键继续工作流向后传递。
 2. **闪烁坏帧自动预警**：自动检测遮罩突变或面积归零的帧并在时间轴标红/黄色 `⚠️` 警告，一眼定位问题帧。
 3. **极速借帧**：一键继承上一帧（快捷键 `P`）或下一帧（快捷键 `N`）遮罩。
-4. **专业绘图套件**：笔刷、橡皮擦、平移、羽化、遮罩颜色/不透明度调节、高清画布缩放平移与视频连续回放。
+4. **专业绘图套件**：笔刷、橡皮擦、魔棒、平移、羽化、遮罩颜色/不透明度调节、高清画布缩放平移与视频连续回放。
+5. **多帧批量编辑**：直接在时间轴选择连续或离散帧，把同一次画笔、擦除或魔棒操作应用到多帧，同时保留各帧原有遮罩差异。
 
 ---
 
@@ -135,6 +140,7 @@ Restart ComfyUI, and the node will be available under:
 
 - 🎨 **专业遮罩画布编辑器**：
   - **画笔与橡皮擦**：可自由调整笔刷尺寸与边缘硬度。
+  - **魔棒**：按颜色容差选择连续区域，可添加到遮罩或从遮罩删除。
   - **平移遮罩**：拖动平移整张遮罩位置，微调偏移。
   - **边缘羽化**：消除边缘生硬锯齿，完美融入下阶段重绘。
   - **透明度与高亮色彩**：自选红/绿/蓝/白等遮罩显示颜色及透明度。
@@ -143,6 +149,7 @@ Restart ComfyUI, and the node will be available under:
   - 视频精准拖动预览，支持连续播放。
   - 绿点（`●`）标注已编辑帧。
   - 黄色叹号（`⚠️`）智能预警遮罩突变/丢失帧。
+  - 支持单击、`Shift` 连选、`Ctrl` 增减和鼠标拖动刷选帧范围。
 - ⚡ **工作流控制模式**：
   - `Interactive (Pause & Wait)`：节点收到数据后暂停执行，打开编辑器修复后点击 **"保存并继续工作流"** 即可顺畅往下跑。
   - `Use Edited or Passthrough`：非阻塞式。自动读取历史已修复数据，未修改帧原样透传。
@@ -159,6 +166,7 @@ Restart ComfyUI, and the node will be available under:
 | `←` / `→` (左右方向键) | 上一帧 / 下一帧 |
 | `B` | 切换为画笔工具 |
 | `E` | 切换为橡皮擦工具 |
+| `W` | 切换为魔棒工具 |
 | `M` | 切换为平移遮罩工具 |
 | `[` / `]` | 调小 / 调大笔刷半径 |
 | `P` | 从 **上一帧 (Previous)** 复制遮罩覆盖当前帧 |
@@ -169,7 +177,7 @@ Restart ComfyUI, and the node will be available under:
 | `F` | 适应画布居中显示 |
 | `滚轮 (Wheel)` | 画布放大 / 缩小 |
 | `鼠标中键` 或 `Alt + 拖拽` | 拖动画布视角 |
-| `Esc` | 关闭编辑器窗口 |
+| `Esc` | 清除多帧选择；再次按下关闭编辑器窗口 |
 
 ---
 

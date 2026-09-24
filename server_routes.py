@@ -81,6 +81,24 @@ def base64_to_tensor_mask(b64_str: str, target_shape: tuple[int, int]) -> torch.
     np_arr = np.array(pil_img, dtype=np.float32) / 255.0
     return torch.from_numpy(np_arr)
 
+def base64_to_operation_mask(b64_str: str, target_shape: tuple[int, int]) -> torch.Tensor:
+    """Decode a transparent canvas operation using its alpha channel."""
+    if "," in b64_str:
+        b64_str = b64_str.split(",", 1)[1]
+    img_data = base64.b64decode(b64_str)
+    pil_img = Image.open(io.BytesIO(img_data)).convert("RGBA")
+    H, W = target_shape
+    if pil_img.size != (W, H):
+        pil_img = pil_img.resize((W, H), Image.BILINEAR)
+    alpha = np.asarray(pil_img, dtype=np.float32)[..., 3] / 255.0
+    return torch.from_numpy(alpha.copy())
+
+def save_cached_mask(node_id: str, frame_idx: int, mask: torch.Tensor):
+    node_dir = get_disk_cache_dir(node_id)
+    save_path = os.path.join(node_dir, f"frame_{frame_idx:05d}.png")
+    np_mask = (mask.numpy().clip(0, 1) * 255).astype(np.uint8)
+    Image.fromarray(np_mask, mode="L").save(save_path)
+
 def translate_mask_tensor(mask: torch.Tensor, dx: int, dy: int) -> torch.Tensor:
     """Translate [H, W] mask by (dx, dy) and zero-fill boundaries."""
     H, W = mask.shape
@@ -203,6 +221,87 @@ def register_routes():
                 "frame_idx": frame_idx,
                 "edited_indices": sorted(list(sess["edited_indices"])),
                 "version": sess["version"]
+            })
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def apply_batch_operation(request):
+        try:
+            data = await request.json()
+            req_id = str(data.get("node_id", ""))
+            frame_indices = sorted(set(int(i) for i in data.get("frame_indices", [])))
+            operation = data.get("operation", "add")
+            operation_data = data.get("operation_data", "")
+
+            node_id, sess = resolve_session(req_id)
+            if not sess:
+                return web.json_response({"success": False, "error": "Session not found"}, status=404)
+            if not frame_indices or any(i < 0 or i >= sess["num_frames"] for i in frame_indices):
+                return web.json_response({"success": False, "error": "Invalid frame selection"}, status=400)
+            if operation not in ("add", "erase"):
+                return web.json_response({"success": False, "error": "Invalid operation"}, status=400)
+
+            H, W = sess["height"], sess["width"]
+            op_mask = base64_to_operation_mask(operation_data, (H, W))
+            edited_before = set(sess.get("edited_indices", set()))
+            history_entry = {
+                "frames": {i: tensor_mask_to_png_bytes(sess["masks"][i]) for i in frame_indices},
+                "edited_before": edited_before,
+            }
+
+            for frame_idx in frame_indices:
+                current = sess["masks"][frame_idx]
+                # Match Canvas source-over / destination-out alpha compositing.
+                updated = current + op_mask * (1.0 - current) if operation == "add" else current * (1.0 - op_mask)
+                sess["masks"][frame_idx] = updated
+                sess["edited_indices"].add(frame_idx)
+                save_cached_mask(node_id, frame_idx, updated)
+
+            history = sess.setdefault("batch_history", [])
+            history.append(history_entry)
+            if len(history) > 10:
+                history.pop(0)
+            sess["version"] = sess.get("version", 0) + 1
+            return web.json_response({
+                "success": True,
+                "frame_indices": frame_indices,
+                "edited_indices": sorted(sess["edited_indices"]),
+                "version": sess["version"],
+            })
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def undo_batch_operation(request):
+        try:
+            data = await request.json()
+            req_id = str(data.get("node_id", ""))
+            node_id, sess = resolve_session(req_id)
+            if not sess:
+                return web.json_response({"success": False, "error": "Session not found"}, status=404)
+            history = sess.setdefault("batch_history", [])
+            if not history:
+                return web.json_response({"success": False, "error": "No batch operation to undo"}, status=400)
+
+            entry = history.pop()
+            edited_before = entry["edited_before"]
+            node_dir = get_disk_cache_dir(node_id)
+            restored = []
+            for frame_idx, png_bytes in entry["frames"].items():
+                restored_mask = base64_to_tensor_mask(base64.b64encode(png_bytes).decode("ascii"), (sess["height"], sess["width"]))
+                sess["masks"][frame_idx] = restored_mask
+                restored.append(frame_idx)
+                save_path = os.path.join(node_dir, f"frame_{frame_idx:05d}.png")
+                if frame_idx in edited_before:
+                    save_cached_mask(node_id, frame_idx, restored_mask)
+                elif os.path.exists(save_path):
+                    os.remove(save_path)
+            sess["edited_indices"] = set(edited_before)
+            sess["version"] = sess.get("version", 0) + 1
+            return web.json_response({
+                "success": True,
+                "frame_indices": sorted(restored),
+                "edited_indices": sorted(sess["edited_indices"]),
+                "version": sess["version"],
             })
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
@@ -390,6 +489,8 @@ def register_routes():
         routes.get(f"{prefix}/video_mask_editor/session")(get_session)
         routes.get(f"{prefix}/video_mask_editor/frame")(get_frame)
         routes.post(f"{prefix}/video_mask_editor/save_frame")(save_frame)
+        routes.post(f"{prefix}/video_mask_editor/apply_batch_operation")(apply_batch_operation)
+        routes.post(f"{prefix}/video_mask_editor/undo_batch_operation")(undo_batch_operation)
         routes.post(f"{prefix}/video_mask_editor/copy_frame")(copy_frame)
         routes.post(f"{prefix}/video_mask_editor/translate_mask")(translate_mask)
         routes.post(f"{prefix}/video_mask_editor/reset_frame")(reset_frame)
