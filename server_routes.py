@@ -93,8 +93,7 @@ def base64_to_operation_mask(b64_str: str, target_shape: tuple[int, int]) -> tor
     alpha = np.asarray(pil_img, dtype=np.float32)[..., 3] / 255.0
     return torch.from_numpy(alpha.copy())
 
-def save_cached_mask(node_id: str, frame_idx: int, mask: torch.Tensor):
-    node_dir = get_disk_cache_dir(node_id)
+def save_cached_mask(node_dir: str, frame_idx: int, mask: torch.Tensor):
     save_path = os.path.join(node_dir, f"frame_{frame_idx:05d}.png")
     np_mask = (mask.numpy().clip(0, 1) * 255).astype(np.uint8)
     Image.fromarray(np_mask, mode="L").save(save_path)
@@ -243,11 +242,14 @@ def register_routes():
 
             H, W = sess["height"], sess["width"]
             op_mask = base64_to_operation_mask(operation_data, (H, W))
+            if torch.is_inference(sess["masks"]):
+                sess["masks"] = sess["masks"].clone()
             edited_before = set(sess.get("edited_indices", set()))
             history_entry = {
                 "frames": {i: tensor_mask_to_png_bytes(sess["masks"][i]) for i in frame_indices},
                 "edited_before": edited_before,
             }
+            node_dir = sess["disk_cache_dir"]
 
             for frame_idx in frame_indices:
                 current = sess["masks"][frame_idx]
@@ -255,7 +257,7 @@ def register_routes():
                 updated = current + op_mask * (1.0 - current) if operation == "add" else current * (1.0 - op_mask)
                 sess["masks"][frame_idx] = updated
                 sess["edited_indices"].add(frame_idx)
-                save_cached_mask(node_id, frame_idx, updated)
+                save_cached_mask(node_dir, frame_idx, updated)
 
             history = sess.setdefault("batch_history", [])
             history.append(history_entry)
@@ -284,7 +286,7 @@ def register_routes():
 
             entry = history.pop()
             edited_before = entry["edited_before"]
-            node_dir = get_disk_cache_dir(node_id)
+            node_dir = sess["disk_cache_dir"]
             restored = []
             for frame_idx, png_bytes in entry["frames"].items():
                 restored_mask = base64_to_tensor_mask(base64.b64encode(png_bytes).decode("ascii"), (sess["height"], sess["width"]))
@@ -292,7 +294,7 @@ def register_routes():
                 restored.append(frame_idx)
                 save_path = os.path.join(node_dir, f"frame_{frame_idx:05d}.png")
                 if frame_idx in edited_before:
-                    save_cached_mask(node_id, frame_idx, restored_mask)
+                    save_cached_mask(node_dir, frame_idx, restored_mask)
                 elif os.path.exists(save_path):
                     os.remove(save_path)
             sess["edited_indices"] = set(edited_before)
