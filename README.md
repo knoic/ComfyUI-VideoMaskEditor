@@ -116,6 +116,16 @@ Restart ComfyUI, and the node will be available under:
 
 > 💡 **Smart Video Cache Isolation**: Edit caches are automatically isolated by video fingerprint hash. Switching to a different video automatically starts a fresh clean canvas without any residual edits from previous videos!
 
+### 💾 Permanent Mask Caches
+
+Manual mask edits are automatically stored in `ComfyUI/output/video_mask_editor_caches/`, so they survive ComfyUI restarts and temporary-directory cleanup. Use **`🗃️ Manage Saved Masks`** in the editor's left toolbar to manage every cache:
+
+- **Save as Independent Cache**: Creates a named snapshot of all currently edited frames. Later edits will not overwrite that snapshot.
+- **Apply to Current**: Applies the saved edited frames to the current video at matching frame indices. Masks are resized automatically when needed.
+- **Delete**: Permanently removes the selected cache directory. This action cannot be undone.
+
+> Note: `reset_cache=True` and **Reset All Frames** clear only the current video's automatic cache. Independent snapshots remain intact.
+
 ---
 
 <br/>
