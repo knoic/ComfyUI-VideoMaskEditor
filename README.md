@@ -68,6 +68,7 @@ When tracking objects or segmenting videos using SAM/SAM3.1, models frequently p
 | `←` / `→` (Left / Right Arrow) | Previous frame / Next frame |
 | `B` | Brush tool |
 | `E` | Eraser tool |
+| `X` | Toggle between Brush and Eraser |
 | `W` | Magic Wand tool |
 | `M` | Move / Translate mask tool |
 | `[` / `]` | Decrease / Increase brush size |
@@ -78,7 +79,8 @@ When tracking objects or segmenting videos using SAM/SAM3.1, models frequently p
 | `Ctrl + S` | Save current frame |
 | `F` | Fit canvas to screen |
 | `Wheel` | Zoom in / Zoom out |
-| `Middle Click` / `Alt + Drag` | Pan canvas |
+| `Alt + Right Mouse Drag` (Brush / Eraser) | Dynamic brush size: drag left to decrease, right to increase; size is shown live |
+| `Middle Click` / `Alt + Left Mouse Drag` | Pan canvas |
 | `Esc` | Clear a multi-frame selection; press again to close the editor |
 
 ---
@@ -166,6 +168,7 @@ Restart ComfyUI, and the node will be available under:
 | `←` / `→` (左右方向键) | 上一帧 / 下一帧 |
 | `B` | 切换为画笔工具 |
 | `E` | 切换为橡皮擦工具 |
+| `X` | 在画笔与橡皮擦之间快速切换 |
 | `W` | 切换为魔棒工具 |
 | `M` | 切换为平移遮罩工具 |
 | `[` / `]` | 调小 / 调大笔刷半径 |
@@ -176,7 +179,8 @@ Restart ComfyUI, and the node will be available under:
 | `Ctrl + S` | 保存当前帧 |
 | `F` | 适应画布居中显示 |
 | `滚轮 (Wheel)` | 画布放大 / 缩小 |
-| `鼠标中键` 或 `Alt + 拖拽` | 拖动画布视角 |
+| `Alt + 鼠标右键左右拖动`（画笔 / 橡皮擦） | 动态调整画笔大小：向左减小、向右增大，拖动时实时显示大小 |
+| `鼠标中键` 或 `Alt + 鼠标左键拖拽` | 拖动画布视角 |
 | `Esc` | 清除多帧选择；再次按下关闭编辑器窗口 |
 
 ---
@@ -192,6 +196,16 @@ Restart ComfyUI, and the node will be available under:
 | `reset_cache` | `BOOLEAN` | `False` | 勾选后将在本次运行时强制清空本视频的所有手动编辑，恢复到初始输入遮罩。 |
 
 > 💡 **智能视频指纹隔离**：本节点会自动根据视频特征（帧数、分辨率、画面稀疏采样指纹）隔离编辑缓存。更换不同视频时，**自动开启全新的干净会话**，绝不会将上一段视频的遮罩或修改混淆残留到新视频中！同时编辑器工具栏新增了 **`🔄 重置所有帧`** 按钮，可随时一键清除当前视频的手动修改。
+
+### 💾 永久遮罩缓存
+
+手动编辑会自动保存到 `ComfyUI/output/video_mask_editor_caches/`，不会因重启 ComfyUI 或清理 `temp` 目录而丢失。编辑器左侧的 **`🗃️ 管理已保存遮罩`** 可查看所有缓存：
+
+- **另存为独立缓存**：为当前已编辑帧创建一份不会被后续编辑覆盖的快照；可命名，适合在尝试不同修补方案前备份。
+- **应用到当前**：将所选缓存中的已编辑帧覆盖到当前视频的同索引帧；不同分辨率会自动缩放。
+- **删除**：永久删除所选缓存目录，无法撤销。
+
+> 注意：`reset_cache=True` 或“重置所有帧”会清空当前视频的自动缓存；通过“另存为独立缓存”创建的快照不会受影响。
 
 ---
 

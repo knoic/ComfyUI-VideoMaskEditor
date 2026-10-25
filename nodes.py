@@ -20,6 +20,7 @@ except ImportError:
 from .server_routes import (
     sessions,
     get_disk_cache_dir,
+    write_cache_metadata,
     detect_flicker_frames,
     register_routes
 )
@@ -238,6 +239,12 @@ class VideoMaskEditor:
             "video_hash": video_hash,
             "disk_cache_dir": node_dir
         }
+        # Keep a manifest beside the PNG frames.  The editor can then list and
+        # manage this cache even after ComfyUI has been restarted.
+        try:
+            write_cache_metadata(node_dir, node_id, sessions[node_id])
+        except Exception as e:
+            logger.warning(f"VideoMaskEditor [{node_id}]: Failed to write cache metadata: {e}")
 
         # 5. Notify Frontend via WebSocket
         register_routes()

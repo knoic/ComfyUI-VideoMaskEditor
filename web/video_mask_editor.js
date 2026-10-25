@@ -37,6 +37,11 @@ class VideoMaskEditorDialog {
         this.isPanning = false;
         this.panStartX = 0;
         this.panStartY = 0;
+
+        // Alt + right-drag brush-size adjustment
+        this.isAdjustingBrushSize = false;
+        this.brushSizeAdjustStartX = 0;
+        this.brushSizeAdjustStartValue = 0;
         
         // Drawing state
         this.isDrawing = false;
@@ -209,6 +214,16 @@ class VideoMaskEditorDialog {
             box-shadow: 0 0 2px #000; z-index: 100;
         `;
         this.viewport.appendChild(this.cursorCircle);
+
+        // Shown while changing brush size with Alt + right-drag.
+        this.brushSizeIndicator = document.createElement("div");
+        this.brushSizeIndicator.style.cssText = `
+            position: absolute; display: none; pointer-events: none; z-index: 101;
+            transform: translate(14px, 14px); padding: 4px 8px; border-radius: 4px;
+            background: rgba(13, 17, 23, 0.9); border: 1px solid #58a6ff;
+            color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap;
+        `;
+        this.viewport.appendChild(this.brushSizeIndicator);
         
         // Floating move offset badge
         this.moveBadge = document.createElement("div");
@@ -265,8 +280,8 @@ class VideoMaskEditorDialog {
         toolGroup.style.cssText = "display: flex; flex-direction: column; gap: 6px;";
         toolGroup.innerHTML = `<div style="font-weight: 600; color: #8b949e; margin-bottom: 2px;">修补工具</div>`;
         
-        this.btnBrush = createToolBtn("brush", "🖌️", "画笔 (涂抹)", "B");
-        this.btnEraser = createToolBtn("eraser", "🧹", "橡皮擦 (擦除)", "E");
+        this.btnBrush = createToolBtn("brush", "🖌️", "画笔 (涂抹)", "B / X");
+        this.btnEraser = createToolBtn("eraser", "🧹", "橡皮擦 (擦除)", "E / X");
         this.btnWand = createToolBtn("wand", "🪄", "魔棒选择", "W");
         this.btnMove = createToolBtn("move", "✥", "拖动遮罩", "M");
         this.btnPan = createToolBtn("pan", "✋", "画布平移", "H");
@@ -312,6 +327,15 @@ class VideoMaskEditorDialog {
         actionGroup.appendChild(btnReset);
         actionGroup.appendChild(btnResetAll);
         this.toolbar.appendChild(actionGroup);
+
+        // Permanent mask cache browser
+        const cacheGroup = document.createElement("div");
+        cacheGroup.style.cssText = "display: flex; flex-direction: column; gap: 6px;";
+        cacheGroup.innerHTML = `<div style="font-weight: 600; color: #8b949e; margin-bottom: 2px;">永久遮罩缓存</div>`;
+        const btnManageCaches = createActionBtn("🗃️", "管理已保存遮罩", "", () => this.openMaskCacheDialog(), "#1d2b3a");
+        btnManageCaches.style.borderColor = "#1f6feb";
+        cacheGroup.appendChild(btnManageCaches);
+        this.toolbar.appendChild(cacheGroup);
         
         // Tool settings
         const settingsGroup = document.createElement("div");
@@ -416,13 +440,9 @@ class VideoMaskEditorDialog {
         this.toolbar.appendChild(settingsGroup);
         
         // Slider listeners
-        sizeRow.querySelector("#vme-size-slider").oninput = (e) => {
-            const v = parseInt(e.target.value);
-            this.brushSize = v;
-            this.eraserSize = v;
-            sizeRow.querySelector("#vme-size-val").textContent = `${v}px`;
-            this.updateCursorCircle();
-        };
+        this.sizeSlider = sizeRow.querySelector("#vme-size-slider");
+        this.sizeValueLabel = sizeRow.querySelector("#vme-size-val");
+        this.sizeSlider.oninput = (e) => this.setBrushSize(parseInt(e.target.value));
         
         opacityRow.querySelector("#vme-opacity-slider").oninput = (e) => {
             const v = parseInt(e.target.value);
@@ -467,6 +487,163 @@ class VideoMaskEditorDialog {
             }
         }
         this.updateCursorCircle();
+    }
+
+    async openMaskCacheDialog() {
+        if (!this.backdrop) return;
+
+        const overlay = document.createElement("div");
+        overlay.style.cssText = `
+            position:absolute; inset:0; z-index:1000; display:flex; align-items:center;
+            justify-content:center; background:rgba(0,0,0,0.62);
+        `;
+        const panel = document.createElement("div");
+        panel.style.cssText = `
+            width:min(680px, 90vw); max-height:75vh; display:flex; flex-direction:column;
+            background:#16191f; border:1px solid #30363d; border-radius:8px;
+            box-shadow:0 18px 50px rgba(0,0,0,.7); overflow:hidden;
+        `;
+        const title = document.createElement("div");
+        title.style.cssText = "padding:14px 16px;border-bottom:1px solid #30363d;font-size:15px;font-weight:600;color:#e6edf3;";
+        title.textContent = "🗃️ 已保存遮罩缓存";
+        const content = document.createElement("div");
+        content.style.cssText = "padding:12px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;";
+        const footer = document.createElement("div");
+        footer.style.cssText = "padding:10px 16px;border-top:1px solid #30363d;display:flex;justify-content:flex-end;gap:8px;";
+        const snapshotButton = document.createElement("button");
+        snapshotButton.textContent = "另存为独立缓存";
+        snapshotButton.style.cssText = "background:#1f6feb;color:#fff;border:0;border-radius:5px;padding:5px 12px;cursor:pointer;";
+        const closeButton = document.createElement("button");
+        closeButton.textContent = "关闭";
+        closeButton.style.cssText = "background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:5px;padding:5px 14px;cursor:pointer;";
+        closeButton.onclick = () => overlay.remove();
+        footer.append(snapshotButton, closeButton);
+        panel.append(title, content, footer);
+        overlay.appendChild(panel);
+        this.backdrop.appendChild(overlay);
+
+        const showError = (message) => {
+            content.replaceChildren();
+            const error = document.createElement("div");
+            error.style.color = "#f85149";
+            error.textContent = `无法读取遮罩缓存：${message}`;
+            content.appendChild(error);
+        };
+
+        const refresh = async () => {
+            content.replaceChildren();
+            const loading = document.createElement("div");
+            loading.style.color = "#8b949e";
+            loading.textContent = "正在读取永久遮罩缓存…";
+            content.appendChild(loading);
+            try {
+                const response = await fetch(getApiURL("/video_mask_editor/mask_caches"));
+                const data = await response.json();
+                if (!data.success) throw new Error(data.error || "请求失败");
+
+                content.replaceChildren();
+                const hint = document.createElement("div");
+                hint.style.cssText = "font-size:11px;color:#8b949e;line-height:1.45;";
+                hint.textContent = `保存位置：${data.cache_root}。应用会覆盖当前视频中同索引、已保存的遮罩帧。`;
+                content.appendChild(hint);
+                if (!data.caches.length) {
+                    const empty = document.createElement("div");
+                    empty.style.cssText = "padding:20px 0;text-align:center;color:#8b949e;";
+                    empty.textContent = "还没有已保存的遮罩缓存。编辑任意帧后会自动创建。";
+                    content.appendChild(empty);
+                    return;
+                }
+
+                data.caches.forEach((cache) => {
+                    const row = document.createElement("div");
+                    row.style.cssText = "display:flex;align-items:center;gap:10px;padding:10px;background:#1b1f27;border:1px solid #30363d;border-radius:6px;";
+                    const details = document.createElement("div");
+                    details.style.cssText = "flex:1;min-width:0;";
+                    const name = document.createElement("div");
+                    name.style.cssText = "font-weight:600;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+                    name.textContent = cache.label || `${cache.is_snapshot ? "独立快照" : "视频缓存"} ${String(cache.video_hash).slice(0, 16)}`;
+                    const meta = document.createElement("div");
+                    meta.style.cssText = "font-size:11px;color:#8b949e;margin-top:3px;";
+                    const size = cache.width && cache.height ? `${cache.width}×${cache.height}` : "未知分辨率";
+                    const time = cache.updated_at ? new Date(cache.updated_at * 1000).toLocaleString() : "未知时间";
+                    meta.textContent = `${cache.edited_count} 个已编辑帧 · ${size} · ${time}`;
+                    details.append(name, meta);
+
+                    const apply = document.createElement("button");
+                    apply.textContent = "应用到当前";
+                    apply.style.cssText = "background:#1f6feb;color:#fff;border:0;border-radius:4px;padding:5px 8px;cursor:pointer;white-space:nowrap;";
+                    apply.onclick = async () => {
+                        if (!confirm(`应用此缓存的 ${cache.edited_count} 个遮罩帧到当前视频？当前同帧遮罩会被覆盖。`)) return;
+                        apply.disabled = true;
+                        apply.textContent = "应用中…";
+                        try {
+                            const response = await fetch(getApiURL("/video_mask_editor/apply_mask_cache"), {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ node_id: this.nodeId, cache_id: cache.id })
+                            });
+                            const result = await response.json();
+                            if (!result.success) throw new Error(result.error || "应用失败");
+                            this.editedIndices = new Set(result.edited_indices || []);
+                            this.maskCanvasCache.clear();
+                            this.updateTrackStrip();
+                            await this.loadCurrentFrame();
+                            alert(`已应用 ${result.applied_frames.length} 个遮罩帧。`);
+                            overlay.remove();
+                        } catch (error) {
+                            alert(`应用缓存失败：${error.message}`);
+                            apply.disabled = false;
+                            apply.textContent = "应用到当前";
+                        }
+                    };
+
+                    const remove = document.createElement("button");
+                    remove.textContent = "删除";
+                    remove.style.cssText = "background:#3d1818;color:#f85149;border:1px solid #da3633;border-radius:4px;padding:5px 8px;cursor:pointer;";
+                    remove.onclick = async () => {
+                        if (!confirm("确定永久删除这个遮罩缓存吗？此操作无法撤销。")) return;
+                        try {
+                            const response = await fetch(getApiURL("/video_mask_editor/delete_mask_cache"), {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ cache_id: cache.id })
+                            });
+                            const result = await response.json();
+                            if (!result.success) throw new Error(result.error || "删除失败");
+                            await refresh();
+                        } catch (error) {
+                            alert(`删除缓存失败：${error.message}`);
+                        }
+                    };
+                    row.append(details, apply, remove);
+                    content.appendChild(row);
+                });
+            } catch (error) {
+                showError(error.message);
+            }
+        };
+        snapshotButton.onclick = async () => {
+            const label = prompt("为这个独立遮罩缓存命名（可留空）", "");
+            if (label === null) return;
+            snapshotButton.disabled = true;
+            snapshotButton.textContent = "保存中…";
+            try {
+                const response = await fetch(getApiURL("/video_mask_editor/save_mask_snapshot"), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ node_id: this.nodeId, label })
+                });
+                const result = await response.json();
+                if (!result.success) throw new Error(result.error || "保存失败");
+                await refresh();
+            } catch (error) {
+                alert(`保存独立缓存失败：${error.message}`);
+            } finally {
+                snapshotButton.disabled = false;
+                snapshotButton.textContent = "另存为独立缓存";
+            }
+        };
+        await refresh();
     }
     
     buildTimeline() {
@@ -706,6 +883,19 @@ class VideoMaskEditorDialog {
         
         // Mouse Down
         this.viewport.addEventListener("mousedown", (e) => {
+            // Photoshop-style brush-size adjustment. It must be checked before
+            // the existing Alt-to-pan behavior.
+            if (e.altKey && e.button === 2 &&
+                (this.currentTool === "brush" || this.currentTool === "eraser")) {
+                e.preventDefault();
+                this.isAdjustingBrushSize = true;
+                this.brushSizeAdjustStartX = e.clientX;
+                this.brushSizeAdjustStartValue = this.getActiveBrushSize();
+                this.viewport.style.cursor = "ew-resize";
+                this.showBrushSizeIndicator(e);
+                return;
+            }
+
             if (e.button === 1 || this.currentTool === "pan" || e.altKey) {
                 this.isPanning = true;
                 this.panStartX = e.clientX - this.panX;
@@ -748,10 +938,25 @@ class VideoMaskEditorDialog {
                 this.applyMagicWand(Math.floor(pt.x), Math.floor(pt.y));
             }
         });
+
+        // Prevent the browser's context menu from interrupting Alt + right-drag.
+        this.viewport.addEventListener("contextmenu", (e) => {
+            if (this.isAdjustingBrushSize || e.altKey) e.preventDefault();
+        });
         
         // Mouse Move
         window.addEventListener("mousemove", (e) => {
             this.updateCursorPosition(e);
+
+            if (this.isAdjustingBrushSize) {
+                // One brush-size unit per two horizontal screen pixels keeps the
+                // adjustment controllable at every canvas zoom level.
+                const nextSize = this.brushSizeAdjustStartValue +
+                    Math.round((e.clientX - this.brushSizeAdjustStartX) / 2);
+                this.setBrushSize(nextSize);
+                this.showBrushSizeIndicator(e);
+                return;
+            }
             
             if (this.isPanning) {
                 this.panX = e.clientX - this.panStartX;
@@ -782,6 +987,16 @@ class VideoMaskEditorDialog {
         
         // Mouse Up
         window.addEventListener("mouseup", (e) => {
+            if (this.isAdjustingBrushSize) {
+                this.isAdjustingBrushSize = false;
+                if (this.brushSizeIndicator) this.brushSizeIndicator.style.display = "none";
+                if (this.viewport) {
+                    this.viewport.style.cursor = this.currentTool === "pan" ? "grab" : "crosshair";
+                }
+                this.updateCursorPosition(e);
+                return;
+            }
+
             if (this.isPanning) {
                 this.isPanning = false;
                 if (this.viewport) this.viewport.style.cursor = this.currentTool === "pan" ? "grab" : "crosshair";
@@ -850,6 +1065,33 @@ class VideoMaskEditorDialog {
         const radius = (this.currentTool === "brush" ? this.brushSize : this.eraserSize) * this.zoom;
         this.cursorCircle.style.width = `${radius * 2}px`;
         this.cursorCircle.style.height = `${radius * 2}px`;
+    }
+
+    getActiveBrushSize() {
+        return this.currentTool === "eraser" ? this.eraserSize : this.brushSize;
+    }
+
+    setBrushSize(size) {
+        const min = this.sizeSlider ? parseInt(this.sizeSlider.min) : 2;
+        const max = this.sizeSlider ? parseInt(this.sizeSlider.max) : 150;
+        const value = Math.max(min, Math.min(max, Math.round(size)));
+
+        // The editor's existing size control intentionally keeps brush and
+        // eraser sizes in sync; preserve that behavior for the gesture too.
+        this.brushSize = value;
+        this.eraserSize = value;
+        if (this.sizeSlider) this.sizeSlider.value = value;
+        if (this.sizeValueLabel) this.sizeValueLabel.textContent = `${value}px`;
+        this.updateCursorCircle();
+    }
+
+    showBrushSizeIndicator(e) {
+        if (!this.brushSizeIndicator || !this.viewport) return;
+        const rect = this.viewport.getBoundingClientRect();
+        this.brushSizeIndicator.style.left = `${e.clientX - rect.left}px`;
+        this.brushSizeIndicator.style.top = `${e.clientY - rect.top}px`;
+        this.brushSizeIndicator.textContent = `画笔大小: ${this.getActiveBrushSize()}px`;
+        this.brushSizeIndicator.style.display = "block";
     }
     
     drawPoint(x, y) {
@@ -1238,7 +1480,12 @@ class VideoMaskEditorDialog {
             if (!this.backdrop || this.backdrop.style.display !== "flex") return;
             if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
             
-            if (e.key === "b" || e.key === "B") this.setTool("brush");
+            if (e.key === "x" || e.key === "X") {
+                // Ignore keyboard auto-repeat so a held key performs one switch.
+                if (!e.repeat) {
+                    this.setTool(this.currentTool === "brush" ? "eraser" : "brush");
+                }
+            } else if (e.key === "b" || e.key === "B") this.setTool("brush");
             else if (e.key === "e" || e.key === "E") this.setTool("eraser");
             else if (e.key === "w" || e.key === "W") this.setTool("wand");
             else if (e.key === "m" || e.key === "M") this.setTool("move");
