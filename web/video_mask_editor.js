@@ -1632,7 +1632,8 @@ app.registerExtension({
                 statusWidget.serialize = false;
                 node.statusWidget = statusWidget;
                 
-                this.setSize([280, 160]);
+                const computedSize = this.computeSize();
+                this.setSize([Math.max(320, computedSize[0]), Math.max(160, computedSize[1])]);
             };
         }
     },
