@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from PIL import Image
 import numpy as np
 
+from .ratio_mask import RATIO_PRESETS, ALIGNMENTS, create_ratio_padding_mask
+
 import comfy.model_management as mm
 from server import PromptServer
 
@@ -79,7 +81,6 @@ class VideoMaskEditor:
         return {
             "required": {
                 "images": ("IMAGE", {"tooltip": "原视频帧序列 (IMAGE)"}),
-                "masks": ("MASK", {"tooltip": "SAM3或其他节点输出的遮罩序列 (MASK)"}),
                 "mode": ([
                     "Interactive (Pause & Wait)",
                     "Use Edited or Passthrough",
@@ -97,9 +98,26 @@ class VideoMaskEditor:
                 }),
             },
             "optional": {
+                "masks": ("MASK", {"tooltip": "输入遮罩模式下必接；比例补边模式下可不连接"}),
                 "reset_cache": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "勾选后将在本次运行时强制清空本视频的所有手动编辑缓存，恢复到初始输入遮罩"
+                }),
+                "mask_source": (["Input masks", "Aspect ratio padding"], {
+                    "default": "Input masks",
+                    "tooltip": "Input masks：使用输入遮罩；Aspect ratio padding：按原始画面比例生成补边区域遮罩，忽略输入遮罩和画面颜色"
+                }),
+                "original_ratio": (RATIO_PRESETS, {
+                    "default": "16:9",
+                    "tooltip": "补边前原始画面的宽高比。输入 images 必须是已经补边后的画面，目标比例由其尺寸自动确定"
+                }),
+                "ratio_width": ("FLOAT", {"default": 16.0, "min": 0.01, "max": 16384.0,
+                    "step": 0.01, "tooltip": "original_ratio=Custom 时使用的原始比例宽度"}),
+                "ratio_height": ("FLOAT", {"default": 9.0, "min": 0.01, "max": 16384.0,
+                    "step": 0.01, "tooltip": "original_ratio=Custom 时使用的原始比例高度"}),
+                "content_alignment": (ALIGNMENTS, {
+                    "default": "Top",
+                    "tooltip": "原画面在补边后画布中的位置。Top=顶部对齐，新增遮罩在下方；Center=居中，两侧均分；Bottom=底部对齐"
                 }),
             },
             "hidden": {
@@ -116,22 +134,47 @@ class VideoMaskEditor:
     OUTPUT_NODE = True
 
     @classmethod
-    def IS_CHANGED(cls, images, masks, mode, feather_edges, reset_cache=False, unique_id=None, **kwargs):
+    def IS_CHANGED(cls, images, masks=None, mode="Interactive (Pause & Wait)", feather_edges=0, reset_cache=False, unique_id=None, **kwargs):
         # Force re-execution if session version, mode, or feather parameters changed
         node_id = str(unique_id) if unique_id is not None else "default"
         version = sessions.get(node_id, {}).get("version", 0)
         return f"{node_id}_{version}_{mode}_{feather_edges}_{reset_cache}_{time.time()}"
 
-    def process(self, images: torch.Tensor, masks: torch.Tensor, mode: str, feather_edges: int = 0, reset_cache: bool = False, unique_id=None, **kwargs):
+    def process(self, images: torch.Tensor, masks: torch.Tensor = None,
+                mode: str = "Interactive (Pause & Wait)", feather_edges: int = 0,
+                reset_cache: bool = False, unique_id=None, mask_source="Input masks",
+                original_ratio="16:9", ratio_width=16.0, ratio_height=9.0,
+                content_alignment="Top", **kwargs):
         node_id = str(unique_id) if unique_id is not None else "default"
-        orig_device = masks.device
-        orig_dtype = masks.dtype
 
         # 1. Normalize dimensions
         # images: [B, H, W, 3]
         if images.ndim == 3:
             images = images.unsqueeze(0)
         B, H, W, C = images.shape
+
+        ratio_cache_key = None
+        if mask_source == "Aspect ratio padding":
+            if original_ratio != "Custom":
+                if original_ratio not in RATIO_PRESETS:
+                    raise ValueError(f"Unknown original aspect ratio: {original_ratio}")
+                ratio_width, ratio_height = map(float, original_ratio.split(":"))
+            masks = create_ratio_padding_mask(
+                B, H, W, ratio_width, ratio_height, content_alignment, device=images.device
+            )
+            # Different geometric masks must never reuse each other's manual edits.
+            ratio_cache_key = hashlib.sha256(json.dumps(
+                [float(ratio_width), float(ratio_height), content_alignment],
+                separators=(",", ":")
+            ).encode("utf-8")).hexdigest()[:16]
+        elif mask_source == "Input masks":
+            if masks is None:
+                raise ValueError("Input masks 模式需要连接 masks；生成补边遮罩请选择 Aspect ratio padding。")
+        else:
+            raise ValueError(f"Unknown mask source: {mask_source}")
+
+        orig_device = masks.device
+        orig_dtype = masks.dtype
 
         # masks: [B, H, W]
         if masks.ndim == 4:
@@ -167,6 +210,8 @@ class VideoMaskEditor:
 
         # Compute video hash to isolate edits per video sequence
         video_hash = compute_video_hash(cpu_images)
+        if ratio_cache_key is not None:
+            video_hash += f"_ratio_{ratio_cache_key}"
         logger.info(f"VideoMaskEditor [{node_id}]: Video fingerprint: {video_hash}")
 
         # 2. Detect flickering frames

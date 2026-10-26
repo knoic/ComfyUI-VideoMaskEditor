@@ -107,10 +107,22 @@ Restart ComfyUI, and the node will be available under:
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `images` | `IMAGE` | Required | Input video frames batch `[B, H, W, C]`. |
-| `masks` | `MASK` | Required | Input video masks batch `[B, H, W]`. |
+| `masks` | `MASK` | Optional socket | Required in `Input masks` mode; unused in `Aspect ratio padding` mode. |
 | `mode` | `COMBO` | `Interactive (Pause & Wait)` | Execution control mode (`Interactive`, `Use Edited or Passthrough`, `Block Downstream`). |
 | `feather_edges` | `INT` | `0` | Gaussian blur / feather radius applied to masks on output (0 = disabled). |
 | `reset_cache` | `BOOLEAN` | `False` | Force clear edit cache for this video and reset to raw input masks. |
+| `mask_source` | `COMBO` | `Input masks` | Select incoming masks or generate padding masks from the original aspect ratio. |
+| `original_ratio` | `COMBO` | `16:9` | Original content ratio: presets or `Custom`. Target dimensions come from `images`. |
+| `ratio_width`, `ratio_height` | `FLOAT` | `16`, `9` | Original ratio dimensions, used only with `Custom`. |
+| `content_alignment` | `COMBO` | `Top` | Position of the original content inside the padded canvas. `Top` selects bottom padding; `Center` splits padding equally. |
+
+#### Generate a padding mask by aspect ratio
+
+Connect the **already padded** image/video frames to `images`, select `mask_source = Aspect ratio padding`, and leave `masks` unconnected. Select the original content ratio and its alignment in the canvas. The node fits that ratio inside the input dimensions and outputs padding as white (1), content as black (0), for every frame. It does not resize or pad the images itself, and never inspects their colors.
+
+Example: original **3840×2160 (16:9)**, padded **3840×2560 (3:2)**, aligned at the top. Set `original_ratio = 16:9`, `content_alignment = Top`: the bottom **400 pixels** become the mask. `Bottom` masks the top padding; `Center` masks 200 pixels at each end. For side padding use `Left`, `Right`, or `Center`; corner alignments are also available. Fractional content dimensions round to the nearest pixel (half up).
+
+For automatic output set `mode = Use Edited or Passthrough`. Interactive mode lets you refine the generated mask. Manual edits are cached separately for each video, original ratio, and alignment; set `reset_cache` to discard edits for the current configuration. Existing input-mask workflows retain their behavior and cache.
 
 > 💡 **Smart Video Cache Isolation**: Edit caches are automatically isolated by video fingerprint hash. Switching to a different video automatically starts a fresh clean canvas without any residual edits from previous videos!
 
@@ -186,10 +198,25 @@ Restart ComfyUI, and the node will be available under:
 | 参数名 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `images` | `IMAGE` | 必填 | 原视频帧序列张量 `[B, H, W, C]`。 |
-| `masks` | `MASK` | 必填 | 初始视频遮罩序列 `[B, H, W]`。 |
+| `masks` | `MASK` | 可选接口 | `Input masks` 模式下必接；比例补边模式下无需连接。 |
 | `mode` | `COMBO` | `Interactive (Pause & Wait)` | 工作流运行模式（`暂停并等待`、`直接透传已编辑`、`阻断下游`）。 |
 | `feather_edges` | `INT` | `0` | 输出遮罩边缘羽化/高斯平滑像素半径（0 为原样保持）。 |
 | `reset_cache` | `BOOLEAN` | `False` | 勾选后将在本次运行时强制清空本视频的所有手动编辑，恢复到初始输入遮罩。 |
+| `mask_source` | `COMBO` | `Input masks` | 选择输入遮罩，或 `Aspect ratio padding`（按原始比例生成补边遮罩）。 |
+| `original_ratio` | `COMBO` | `16:9` | 补边前原画面宽高比，可选常见比例或 `Custom`。 |
+| `ratio_width`、`ratio_height` | `FLOAT` | `16`、`9` | 选择 `Custom` 时使用的原始比例宽、高。 |
+| `content_alignment` | `COMBO` | `Top` | 原画面在补边后画布中的位置；Top 顶部对齐、Center 居中、Bottom 底部对齐，也支持左右和四角。 |
+
+#### 按比例生成固定补边遮罩
+
+1. 把**已经补边后的图像或视频帧**连接到 `images`。
+2. `mask_source` 选 **`Aspect ratio padding`**，`masks` 无需连接。
+3. `original_ratio` 选补边前的比例，`content_alignment` 选原画面实际位置。
+4. 自动输出时，`mode` 选 **`Use Edited or Passthrough`**；需要手工精修时选择交互模式。
+
+例如原图 **3840×2160（16:9）**，向下补边后为 **3840×2560（3:2）**：选择 `16:9` + `Top`，每帧底部 **400 像素**为白色有效遮罩，上方为黑色。`Center` 则上下各 200 像素，`Bottom` 则上方 400 像素。左右补边可使用 Left/Right/Center。
+
+目标尺寸直接读取输入 `images`；节点按原始比例在画布内完整放置原画面，**只生成遮罩，不负责扩图或缩放**，不受画面颜色影响。非整数内容尺寸四舍五入到像素，不额外对齐到 8/16 倍数。不同原始比例和对齐方式使用独立的编辑缓存，修改参数后不会套用另一配置的旧遮罩；若要清除当前配置的精修结果，使用 `reset_cache`。
 
 > 💡 **智能视频指纹隔离**：本节点会自动根据视频特征（帧数、分辨率、画面稀疏采样指纹）隔离编辑缓存。更换不同视频时，**自动开启全新的干净会话**，绝不会将上一段视频的遮罩或修改混淆残留到新视频中！同时编辑器工具栏新增了 **`🔄 重置所有帧`** 按钮，可随时一键清除当前视频的手动修改。
 
