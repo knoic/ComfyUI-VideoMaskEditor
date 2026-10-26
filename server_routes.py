@@ -4,6 +4,7 @@ import time
 import json
 import base64
 import threading
+import shutil
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -16,14 +17,64 @@ import folder_paths
 sessions = {}
 
 def get_disk_cache_dir(node_id: str, video_hash: str = None) -> str:
-    """Return local disk cache directory for saving edited masks persistently, isolated per video."""
-    cache_root = os.path.join(folder_paths.get_temp_directory(), "video_mask_editor")
+    """Return the permanent, per-video mask cache directory."""
+    # ComfyUI's temp directory may be cleared at startup or by a launcher.  The
+    # output directory is deliberately used instead so edits survive restarts.
+    cache_root = os.path.join(folder_paths.get_output_directory(), "video_mask_editor_caches")
     if video_hash:
-        node_dir = os.path.join(cache_root, f"node_{node_id}", str(video_hash))
+        node_dir = os.path.join(cache_root, f"video_{video_hash}")
     else:
         node_dir = os.path.join(cache_root, f"node_{node_id}")
     os.makedirs(node_dir, exist_ok=True)
     return node_dir
+
+def get_cache_root() -> str:
+    """Return (and create) the root containing user-manageable mask caches."""
+    root = os.path.join(folder_paths.get_output_directory(), "video_mask_editor_caches")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+def cache_frame_indices(cache_dir: str) -> list[int]:
+    indices = []
+    if not os.path.isdir(cache_dir):
+        return indices
+    for filename in os.listdir(cache_dir):
+        if filename.startswith("frame_") and filename.endswith(".png"):
+            try:
+                indices.append(int(filename[6:-4]))
+            except ValueError:
+                pass
+    return sorted(indices)
+
+def write_cache_metadata(cache_dir: str, node_id: str, sess: dict):
+    """Store lightweight metadata so the cache browser remains usable after restart."""
+    metadata_path = os.path.join(cache_dir, "metadata.json")
+    now = int(time.time())
+    existing = {}
+    try:
+        with open(metadata_path, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass
+    metadata = {
+        "version": 1,
+        "video_hash": sess.get("video_hash", ""),
+        "source_node_id": str(node_id),
+        "width": sess["width"],
+        "height": sess["height"],
+        "num_frames": sess["num_frames"],
+        "created_at": existing.get("created_at", now),
+        "updated_at": now,
+    }
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+def read_cache_metadata(cache_dir: str) -> dict:
+    try:
+        with open(os.path.join(cache_dir, "metadata.json"), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 def detect_flicker_frames(masks: torch.Tensor) -> list[int]:
     """
@@ -214,6 +265,7 @@ def register_routes():
             save_path = os.path.join(node_dir, f"frame_{frame_idx:05d}.png")
             np_mask = (new_mask.numpy().clip(0, 1) * 255).astype(np.uint8)
             Image.fromarray(np_mask, mode="L").save(save_path)
+            write_cache_metadata(node_dir, node_id, sess)
             
             return web.json_response({
                 "success": True,
@@ -264,6 +316,7 @@ def register_routes():
             if len(history) > 10:
                 history.pop(0)
             sess["version"] = sess.get("version", 0) + 1
+            write_cache_metadata(node_dir, node_id, sess)
             return web.json_response({
                 "success": True,
                 "frame_indices": frame_indices,
@@ -299,6 +352,7 @@ def register_routes():
                     os.remove(save_path)
             sess["edited_indices"] = set(edited_before)
             sess["version"] = sess.get("version", 0) + 1
+            write_cache_metadata(node_dir, node_id, sess)
             return web.json_response({
                 "success": True,
                 "frame_indices": sorted(restored),
@@ -336,6 +390,7 @@ def register_routes():
             save_path = os.path.join(node_dir, f"frame_{target_frame:05d}.png")
             np_mask = (sess["masks"][target_frame].numpy().clip(0, 1) * 255).astype(np.uint8)
             Image.fromarray(np_mask, mode="L").save(save_path)
+            write_cache_metadata(node_dir, node_id, sess)
             
             return web.json_response({
                 "success": True,
@@ -377,6 +432,7 @@ def register_routes():
             save_path = os.path.join(node_dir, f"frame_{frame_idx:05d}.png")
             np_mask = (shifted_mask.numpy().clip(0, 1) * 255).astype(np.uint8)
             Image.fromarray(np_mask, mode="L").save(save_path)
+            write_cache_metadata(node_dir, node_id, sess)
             
             return web.json_response({
                 "success": True,
@@ -416,6 +472,7 @@ def register_routes():
                     os.remove(save_path)
                 except Exception:
                     pass
+            write_cache_metadata(node_dir, node_id, sess)
                     
             return web.json_response({
                 "success": True,
@@ -447,6 +504,7 @@ def register_routes():
                             os.remove(os.path.join(node_dir, f))
                         except Exception:
                             pass
+            write_cache_metadata(node_dir, node_id, sess)
                             
             return web.json_response({"success": True, "edited_indices": [], "version": sess["version"]})
         except Exception as e:
@@ -486,6 +544,133 @@ def register_routes():
         except Exception as e:
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
+    def resolve_cache_directory(cache_id: str):
+        """Resolve only direct children of the persistent cache root."""
+        root = os.path.abspath(get_cache_root())
+        safe_id = os.path.basename(str(cache_id))
+        if safe_id != cache_id:
+            return None
+        candidate = os.path.abspath(os.path.join(root, safe_id))
+        if os.path.dirname(candidate) != root or not os.path.isdir(candidate):
+            return None
+        return candidate
+
+    async def list_mask_caches(request):
+        try:
+            root = get_cache_root()
+            entries = []
+            for cache_id in os.listdir(root):
+                cache_dir = os.path.join(root, cache_id)
+                if not os.path.isdir(cache_dir):
+                    continue
+                metadata = read_cache_metadata(cache_dir)
+                frames = cache_frame_indices(cache_dir)
+                # Ignore unrelated folders that happen to be under the output dir.
+                if not metadata and not frames:
+                    continue
+                entries.append({
+                    "id": cache_id,
+                    "video_hash": metadata.get("video_hash", cache_id[6:] if cache_id.startswith("video_") else cache_id),
+                    "label": metadata.get("label", ""),
+                    "is_snapshot": bool(metadata.get("is_snapshot", False)),
+                    "width": metadata.get("width"),
+                    "height": metadata.get("height"),
+                    "num_frames": metadata.get("num_frames"),
+                    "edited_count": len(frames),
+                    "updated_at": metadata.get("updated_at", int(os.path.getmtime(cache_dir))),
+                })
+            entries.sort(key=lambda item: item["updated_at"], reverse=True)
+            return web.json_response({"success": True, "cache_root": root, "caches": entries})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def save_mask_snapshot(request):
+        """Copy the current edited-frame PNGs into an immutable, independent cache."""
+        try:
+            data = await request.json()
+            req_id = str(data.get("node_id", ""))
+            label = str(data.get("label", "")).strip()[:80]
+            node_id, sess = resolve_session(req_id)
+            if not sess:
+                return web.json_response({"success": False, "error": "Session not found"}, status=404)
+            source_dir = sess["disk_cache_dir"]
+            frame_indices = cache_frame_indices(source_dir)
+            if not frame_indices:
+                return web.json_response({"success": False, "error": "No edited mask frames to save"}, status=400)
+
+            snapshot_id = f"snapshot_{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns() % 1000000:06d}"
+            snapshot_dir = os.path.join(get_cache_root(), snapshot_id)
+            os.makedirs(snapshot_dir, exist_ok=False)
+            for frame_idx in frame_indices:
+                filename = f"frame_{frame_idx:05d}.png"
+                shutil.copy2(os.path.join(source_dir, filename), os.path.join(snapshot_dir, filename))
+            write_cache_metadata(snapshot_dir, node_id, sess)
+            metadata_path = os.path.join(snapshot_dir, "metadata.json")
+            metadata = read_cache_metadata(snapshot_dir)
+            metadata["is_snapshot"] = True
+            metadata["label"] = label or f"遮罩快照 {time.strftime('%Y-%m-%d %H:%M:%S')}"
+            with open(metadata_path, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            return web.json_response({"success": True, "cache_id": snapshot_id})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def apply_mask_cache(request):
+        try:
+            data = await request.json()
+            req_id = str(data.get("node_id", ""))
+            cache_id = str(data.get("cache_id", ""))
+            node_id, sess = resolve_session(req_id)
+            if not sess:
+                return web.json_response({"success": False, "error": "Session not found"}, status=404)
+            source_dir = resolve_cache_directory(cache_id)
+            if not source_dir:
+                return web.json_response({"success": False, "error": "Saved cache not found"}, status=404)
+
+            H, W = sess["height"], sess["width"]
+            target_dir = sess["disk_cache_dir"]
+            frame_indices = [idx for idx in cache_frame_indices(source_dir) if idx < sess["num_frames"]]
+            if not frame_indices:
+                return web.json_response({"success": False, "error": "This cache has no frames compatible with the current video"}, status=400)
+
+            # A cloned CPU tensor is always writable, including after an
+            # inference-mode pipeline has produced the current session.
+            sess["masks"] = sess["masks"].detach().cpu().clone()
+            applied = []
+            for frame_idx in frame_indices:
+                source_path = os.path.join(source_dir, f"frame_{frame_idx:05d}.png")
+                with Image.open(source_path) as image:
+                    image = image.convert("L")
+                    if image.size != (W, H):
+                        image = image.resize((W, H), Image.BILINEAR)
+                    mask = torch.from_numpy(np.array(image, dtype=np.float32) / 255.0)
+                sess["masks"][frame_idx] = mask
+                sess["edited_indices"].add(frame_idx)
+                save_cached_mask(target_dir, frame_idx, mask)
+                applied.append(frame_idx)
+
+            sess["version"] = sess.get("version", 0) + 1
+            write_cache_metadata(target_dir, node_id, sess)
+            return web.json_response({
+                "success": True,
+                "applied_frames": applied,
+                "edited_indices": sorted(sess["edited_indices"]),
+                "version": sess["version"],
+            })
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
+    async def delete_mask_cache(request):
+        try:
+            data = await request.json()
+            cache_dir = resolve_cache_directory(str(data.get("cache_id", "")))
+            if not cache_dir:
+                return web.json_response({"success": False, "error": "Saved cache not found"}, status=404)
+            shutil.rmtree(cache_dir)
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"success": False, "error": str(e)}, status=500)
+
     # Register both standard and /api prefixed routes
     for prefix in ["", "/api"]:
         routes.get(f"{prefix}/video_mask_editor/session")(get_session)
@@ -499,3 +684,7 @@ def register_routes():
         routes.post(f"{prefix}/video_mask_editor/reset_all")(reset_all)
         routes.post(f"{prefix}/video_mask_editor/continue")(continue_execution)
         routes.post(f"{prefix}/video_mask_editor/cancel")(cancel_execution)
+        routes.get(f"{prefix}/video_mask_editor/mask_caches")(list_mask_caches)
+        routes.post(f"{prefix}/video_mask_editor/save_mask_snapshot")(save_mask_snapshot)
+        routes.post(f"{prefix}/video_mask_editor/apply_mask_cache")(apply_mask_cache)
+        routes.post(f"{prefix}/video_mask_editor/delete_mask_cache")(delete_mask_cache)
