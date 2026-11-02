@@ -99,14 +99,14 @@ class VideoMaskEditor:
                 }),
             },
             "optional": {
-                "masks": ("MASK", {"tooltip": "输入遮罩模式下必接；比例补边模式下可不连接"}),
+                "masks": ("MASK", {"tooltip": "输入遮罩序列 (MASK)。未连接时自动生成全黑空白遮罩供从零绘制；比例补边模式下无需连接"}),
                 "reset_cache": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "勾选后将在本次运行时强制清空本视频的所有手动编辑缓存，恢复到初始输入遮罩"
                 }),
                 "mask_source": (["Input masks", "Aspect ratio padding"], {
                     "default": "Input masks",
-                    "tooltip": "Input masks：使用输入遮罩；Aspect ratio padding：按原始画面比例生成补边区域遮罩，忽略输入遮罩和画面颜色"
+                    "tooltip": "Input masks：使用输入遮罩（未连接时自动生成空白遮罩）；Aspect ratio padding：按原始画面比例生成补边区域遮罩，忽略输入遮罩和画面颜色"
                 }),
                 "original_ratio": (RATIO_PRESETS, {
                     "default": "16:9",
@@ -169,8 +169,9 @@ class VideoMaskEditor:
                 separators=(",", ":")
             ).encode("utf-8")).hexdigest()[:16]
         elif mask_source == "Input masks":
-            if masks is None:
-                raise ValueError("Input masks 模式需要连接 masks；生成补边遮罩请选择 Aspect ratio padding。")
+            if masks is None or (isinstance(masks, torch.Tensor) and masks.numel() == 0):
+                logger.info(f"VideoMaskEditor [{node_id}]: No input masks provided. Initialized with empty masks ({B}x{H}x{W}).")
+                masks = torch.zeros((B, H, W), dtype=torch.float32, device=images.device)
         else:
             raise ValueError(f"Unknown mask source: {mask_source}")
 

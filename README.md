@@ -109,7 +109,7 @@ Restart ComfyUI, and the node will be available under:
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `images` | `IMAGE` | Required | Input video frames batch `[B, H, W, C]`. |
-| `masks` | `MASK` | Optional socket | Required in `Input masks` mode; unused in `Aspect ratio padding` mode. |
+| `masks` | `MASK` | Optional socket | Incoming masks. If unconnected, generates blank (zero) masks to paint from scratch; unused in `Aspect ratio padding` mode. |
 | `mode` | `COMBO` | `Interactive (Pause & Wait)` | Execution control mode (`Interactive`, `Use Edited or Passthrough`, `Block Downstream`). |
 | `feather_edges` | `INT` | `0` | Gaussian blur / feather radius applied to masks on output (0 = disabled). |
 | `reset_cache` | `BOOLEAN` | `False` | Force clear edit cache for this video and reset to raw input masks. |
@@ -212,7 +212,7 @@ Manual mask edits are automatically stored in `ComfyUI/output/video_mask_editor_
 | 参数名 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `images` | `IMAGE` | 必填 | 原视频帧序列张量 `[B, H, W, C]`。 |
-| `masks` | `MASK` | 可选接口 | `Input masks` 模式下必接；比例补边模式下无需连接。 |
+| `masks` | `MASK` | 可选接口 | 输入遮罩序列。未连接时自动生成全黑空白遮罩供从零手绘；在 `Aspect ratio padding` 模式下无需连接。 |
 | `mode` | `COMBO` | `Interactive (Pause & Wait)` | 工作流运行模式（`暂停并等待`、`直接透传已编辑`、`阻断下游`）。 |
 | `feather_edges` | `INT` | `0` | 输出遮罩边缘羽化/高斯平滑像素半径（0 为原样保持）。 |
 | `reset_cache` | `BOOLEAN` | `False` | 勾选后将在本次运行时强制清空本视频的所有手动编辑，恢复到初始输入遮罩。 |

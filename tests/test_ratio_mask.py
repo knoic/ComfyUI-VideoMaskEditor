@@ -118,12 +118,16 @@ class NodeIntegrationTests(unittest.TestCase):
         masks, _ = self.generate(original_ratio="Custom", ratio_width=3, ratio_height=2)
         self.assertEqual(masks.count_nonzero().item(), 0)
 
-    def test_input_mask_passthrough_and_missing_error(self):
+    def test_input_mask_passthrough_and_missing_default_blank(self):
         original = torch.rand(1, 64, 96)
         masks, _ = self.node.process(self.images, original, "Use Edited or Passthrough")
         self.assertTrue(torch.equal(masks, original.repeat(2, 1, 1)))
-        with self.assertRaisesRegex(ValueError, "Input masks"):
-            self.node.process(self.images, mode="Use Edited or Passthrough")
+
+        # When masks is None, it should generate blank (all-zero) masks instead of erroring
+        blank_masks, images = self.node.process(self.images, mode="Use Edited or Passthrough")
+        self.assertEqual(tuple(blank_masks.shape), (2, 64, 96))
+        self.assertEqual(blank_masks.count_nonzero().item(), 0)
+        self.assertTrue(torch.equal(images, self.images))
 
     def test_cache_isolation_and_reset(self):
         self.generate()
