@@ -566,7 +566,8 @@ class VideoMaskEditorDialog {
                     meta.style.cssText = "font-size:11px;color:#8b949e;margin-top:3px;";
                     const size = cache.width && cache.height ? `${cache.width}×${cache.height}` : "未知分辨率";
                     const time = cache.updated_at ? new Date(cache.updated_at * 1000).toLocaleString() : "未知时间";
-                    meta.textContent = `${cache.edited_count} 个已编辑帧 · ${size} · ${time}`;
+                    const sourceNode = cache.source_node_id ? `节点 ${cache.source_node_id} · ` : "";
+                    meta.textContent = `${sourceNode}${cache.edited_count} 个已编辑帧 · ${size} · ${time}`;
                     details.append(name, meta);
 
                     const apply = document.createElement("button");
@@ -1879,7 +1880,8 @@ app.registerExtension({
                 statusWidget.serialize = false;
                 node.statusWidget = statusWidget;
                 
-                this.setSize([280, 160]);
+                const computedSize = this.computeSize();
+                this.setSize([Math.max(320, computedSize[0]), Math.max(160, computedSize[1])]);
             };
         }
     },

@@ -5,6 +5,7 @@ import json
 import base64
 import threading
 import shutil
+import hashlib
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -17,14 +18,17 @@ import folder_paths
 sessions = {}
 
 def get_disk_cache_dir(node_id: str, video_hash: str = None) -> str:
-    """Return the permanent, per-video mask cache directory."""
+    """Return a permanent cache isolated by both node and video."""
     # ComfyUI's temp directory may be cleared at startup or by a launcher.  The
     # output directory is deliberately used instead so edits survive restarts.
     cache_root = os.path.join(folder_paths.get_output_directory(), "video_mask_editor_caches")
+    # Keep each cache a direct child for the cache browser. Hash node IDs so
+    # nested/subgraph IDs cannot introduce path separators into the directory.
+    node_key = hashlib.sha256(str(node_id).encode("utf-8")).hexdigest()[:16]
+    cache_id = f"node_{node_key}"
     if video_hash:
-        node_dir = os.path.join(cache_root, f"video_{video_hash}")
-    else:
-        node_dir = os.path.join(cache_root, f"node_{node_id}")
+        cache_id += f"_video_{video_hash}"
+    node_dir = os.path.join(cache_root, cache_id)
     os.makedirs(node_dir, exist_ok=True)
     return node_dir
 
@@ -48,6 +52,7 @@ def cache_frame_indices(cache_dir: str) -> list[int]:
 
 def write_cache_metadata(cache_dir: str, node_id: str, sess: dict):
     """Store lightweight metadata so the cache browser remains usable after restart."""
+    os.makedirs(cache_dir, exist_ok=True)
     metadata_path = os.path.join(cache_dir, "metadata.json")
     now = int(time.time())
     existing = {}
@@ -145,6 +150,7 @@ def base64_to_operation_mask(b64_str: str, target_shape: tuple[int, int]) -> tor
     return torch.from_numpy(alpha.copy())
 
 def save_cached_mask(node_dir: str, frame_idx: int, mask: torch.Tensor):
+    os.makedirs(node_dir, exist_ok=True)
     save_path = os.path.join(node_dir, f"frame_{frame_idx:05d}.png")
     np_mask = (mask.numpy().clip(0, 1) * 255).astype(np.uint8)
     Image.fromarray(np_mask, mode="L").save(save_path)
@@ -573,6 +579,7 @@ def register_routes():
                     "video_hash": metadata.get("video_hash", cache_id[6:] if cache_id.startswith("video_") else cache_id),
                     "label": metadata.get("label", ""),
                     "is_snapshot": bool(metadata.get("is_snapshot", False)),
+                    "source_node_id": metadata.get("source_node_id", ""),
                     "width": metadata.get("width"),
                     "height": metadata.get("height"),
                     "num_frames": metadata.get("num_frames"),
@@ -666,6 +673,18 @@ def register_routes():
             cache_dir = resolve_cache_directory(str(data.get("cache_id", "")))
             if not cache_dir:
                 return web.json_response({"success": False, "error": "Saved cache not found"}, status=404)
+            # Removing only the files would leave active masks/history alive in
+            # memory and break subsequent writes. Reset All is the explicit way
+            # to clear an active session and its automatic cache together.
+            if any(
+                os.path.normcase(os.path.abspath(sess["disk_cache_dir"]))
+                == os.path.normcase(cache_dir)
+                for sess in sessions.values() if sess.get("disk_cache_dir")
+            ):
+                return web.json_response({
+                    "success": False,
+                    "error": "此缓存正在被节点使用，请在编辑器中使用“重置所有帧”清除当前编辑。",
+                }, status=409)
             shutil.rmtree(cache_dir)
             return web.json_response({"success": True})
         except Exception as e:
