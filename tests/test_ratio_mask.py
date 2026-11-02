@@ -77,6 +77,7 @@ class NodeIntegrationTests(unittest.TestCase):
             directory.mkdir(parents=True, exist_ok=True)
             return str(directory)
         routes.get_disk_cache_dir = cache_dir
+        routes.write_cache_metadata = lambda *args: None
         routes.detect_flicker_frames = lambda masks: []
         routes.register_routes = lambda: None
         server = types.ModuleType("server")
